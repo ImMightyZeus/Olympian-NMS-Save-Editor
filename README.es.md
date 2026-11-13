@@ -107,6 +107,10 @@ Olympian es gratis. Si te ahorró horas de grindeo (o una partida), puedes invit
 
 **Desarrollado por MightyZeus, de Nicaragua 🇳🇮.**
 
+Repositorio: [github.com/ImMightyZeus/Olympian-NMS-Save-Editor](https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor)
+
+Agradecimientos a mi querida esposa, a mi familia y a Pangro Daer Barun D'Gross por seguirme corrompiendo con videojuegos.
+
 Hecho sobre el trabajo de la comunidad de modding de No Man's Sky:
 
 - [libNOM.map](https://github.com/zencq/libNOM.map) de zencq: mapa de las claves ofuscadas de la partida (GPL-3.0; `olympian/data/mapping_mbincompiler.json`).
