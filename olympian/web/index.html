@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es" translate="no" class="notranslate">
+<head>
+<meta charset="utf-8">
+<meta name="google" content="notranslate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Olympian NMS Save Editor</title>
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="192x192" href="favicon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Pantalla de inicio: elegir partida, respaldos (sin menú lateral) -->
+<section id="start" class="screen" hidden>
+  <header class="topbar">
+    <div class="brand"><img class="logo" src="logo.png" alt=""><div><b>Olympian</b><small data-i18n="app.subtitle"></small></div></div>
+    <div class="row">
+      <span id="start-status"></span>
+      <button class="btn" id="btn-settings" data-i18n="settings.title"></button>
+      <button class="btn" id="btn-exit2" data-i18n="editor.exit"></button>
+    </div>
+  </header>
+  <main id="start-main" class="wide"></main>
+</section>
+
+<!-- Editor: solo después de elegir una partida -->
+<section id="editor" class="screen editor" hidden>
+  <aside class="side">
+    <div class="brand"><img class="logo" src="logo.png" alt=""><div><b>Olympian</b><small data-i18n="app.subtitle"></small></div></div>
+    <nav id="nav">
+      <button data-view="summary" data-i18n="nav.summary"></button>
+      <button data-view="travel" data-i18n="nav.travel"></button>
+      <button data-view="ships" data-i18n="nav.ships"></button>
+      <button data-view="inventories" data-i18n="nav.inventories"></button>
+      <button data-view="missions" data-i18n="nav.missions"></button>
+      <button data-view="settlements" data-i18n="nav.settlements"></button>
+      <button data-view="json" data-i18n="nav.json"></button>
+      <button data-view="settings" data-i18n="nav.settings"></button>
+    </nav>
+    <div class="status" id="status"></div>
+  </aside>
+  <div class="editor-body">
+    <header class="topbar">
+      <div><span class="muted" data-i18n="editor.editing"></span> <b id="editing-name"></b></div>
+      <div class="row">
+        <button class="btn" id="btn-discard" data-i18n="editor.discard"></button>
+        <button class="btn primary" id="btn-save"></button>
+        <select id="slot-switch" class="switch" title=""></select>
+        <button class="btn" id="btn-exit" data-i18n="editor.exit"></button>
+      </div>
+    </header>
+    <main id="main"></main>
+  </div>
+</section>
+
+<div class="modal" id="modal" hidden>
+  <div class="card modal-card">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <div class="row end" id="modal-actions"></div>
+  </div>
+</div>
+<div id="busy" class="busy" hidden><span class="spinner"></span><span data-i18n="common.working"></span></div>
+<script src="app.js"></script>
+</body>
+</html>
