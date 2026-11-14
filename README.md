@@ -100,16 +100,12 @@ Bug reports are welcome in [Issues](../../issues): please attach `olympian_log.t
 
 ## Support the project
 
-Olympian is free. If it saved you some hours of grinding (or a save), you can buy MightyZeus a coffee:
+Olympian NMS Save Editor is free. If it saved you some hours of grinding (or a save), you can buy MightyZeus a coffee:
 **[paypal.me/ImMightyZeus](https://paypal.me/ImMightyZeus)** — any amount helps keep it updated after every game patch. Thank you!
 
 ## Credits
 
 **Developed by MightyZeus, from Nicaragua 🇳🇮.**
-
-Repository: [github.com/ImMightyZeus/Olympian-NMS-Save-Editor](https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor)
-
-Thanks to my dear wife, to my family and to Pangro Daer Barun D'Gross for keeping on corrupting me with video games.
 
 Built on the work of the No Man's Sky modding community:
 
@@ -121,6 +117,12 @@ Built on the work of the No Man's Sky modding community:
 ## Disclaimer
 
 Olympian is a fan-made tool, **not affiliated with or endorsed by Hello Games**. *No Man's Sky* is a trademark of Hello Games. Game texts, data and icons included in `olympian/data/` belong to Hello Games and are included only for use with your own copy of the game. Editing saves is at your own risk — Olympian makes a backup before every write, but keep your own copies of important saves too.
+
+## AI Disclosure
+
+## Disclosure Regarding AI Use
+
+To be transparent — I design, define, and integrate the features and limitations of the Olympian NMS Save Editor. I have tested every version using my own save files on Windows 11 or later. The code has been analyzed, audited, and validated with the assistance of an AI (Claude) under my supervision. I take full responsibility for the tool and will handle its ongoing maintenance.
 
 ## License
 

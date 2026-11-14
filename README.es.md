@@ -107,10 +107,6 @@ Olympian es gratis. Si te ahorró horas de grindeo (o una partida), puedes invit
 
 **Desarrollado por MightyZeus, de Nicaragua 🇳🇮.**
 
-Repositorio: [github.com/ImMightyZeus/Olympian-NMS-Save-Editor](https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor)
-
-Agradecimientos a mi querida esposa, a mi familia y a Pangro Daer Barun D'Gross por seguirme corrompiendo con videojuegos.
-
 Hecho sobre el trabajo de la comunidad de modding de No Man's Sky:
 
 - [libNOM.map](https://github.com/zencq/libNOM.map) de zencq: mapa de las claves ofuscadas de la partida (GPL-3.0; `olympian/data/mapping_mbincompiler.json`).
@@ -121,6 +117,10 @@ Hecho sobre el trabajo de la comunidad de modding de No Man's Sky:
 ## Aviso
 
 Olympian es una herramienta hecha por un fan, **sin relación con Hello Games ni respaldada por ellos**. *No Man's Sky* es una marca de Hello Games. Los textos, datos e iconos del juego incluidos en `olympian/data/` pertenecen a Hello Games y se incluyen solo para usarlos con tu propia copia del juego. Editar partidas es bajo tu propio riesgo: Olympian hace un respaldo antes de cada escritura, pero guarda también tus propias copias de las partidas importantes.
+
+## Divulgación sobre el uso de IA
+
+Para ser transparente: Yo diseño, defino e integro las funciones y limitaciones de Olympian NMS Save Editor. He probado cada versión con mis propias partidas guardadas en Windows 11 o superior. El código ha sido analizado, auditado y validado con la ayuda de una IA (Claude) bajo mi supervisión. Asumo la responsabilidad de la herramienta y me encargaré de su mantenimiento.
 
 ## Licencia
 
