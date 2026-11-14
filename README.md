@@ -120,8 +120,6 @@ Olympian is a fan-made tool, **not affiliated with or endorsed by Hello Games**.
 
 ## AI Disclosure
 
-## Disclosure Regarding AI Use
-
 To be transparent — I design, define, and integrate the features and limitations of the Olympian NMS Save Editor. I have tested every version using my own save files on Windows 11 or later. The code has been analyzed, audited, and validated with the assistance of an AI (Claude) under my supervision. I take full responsibility for the tool and will handle its ongoing maintenance.
 
 ## License
