@@ -40,6 +40,9 @@ class Plan:
     summary: dict | None = None         # one-line description for the pending-changes list
     staged: bool = False                # True = goes to the working copy, written only on Save
     dest_slot: int | None = None        # slot written by copy / restore (for the history)
+    delete_files: list[str] = field(default_factory=list)   # delete a slot: these files go (after a backup)
+    needs_code: bool = False            # destructive: the 2FA code is asked again before applying
+    meta: dict = field(default_factory=dict)   # facts kept after saving (e.g. a seed change for its history)
 
     @property
     def blocked(self) -> bool:
@@ -53,13 +56,16 @@ class Plan:
                 seen.add(k)
                 msgs.append(m)
         return {'id': self.id, 'action': self.action, 'blocked': self.blocked, 'messages': msgs, 'staged': self.staged,
-                'files': sorted({file_names(c.target_index)[0] for c in self.changes})}
+                'files': sorted({file_names(c.target_index)[0] for c in self.changes} | set(self.delete_files)),
+                'needs_code': self.needs_code}
 
 
 # ---------------------------------------------------------------- helpers ------------------
 def load_slot(folder: SaveFolder, slot: int) -> list[SaveFile]:
     out = []
-    for fi in files_of_slot(slot):
+    # manual save (even file: ship exit, save point, beacon) first: it is the one views and edits work on;
+    # the autosave (odd file) only gets an edit when it holds the same data
+    for fi in sorted(files_of_slot(slot), key=lambda i: i % 2):
         f = folder.file(fi)
         if f.exists():
             out.append(f.load())
@@ -151,7 +157,8 @@ def describe_slot(folder: SaveFolder, slot: int, files_in: list[SaveFile] | None
                        'seed': (s[k.s('Resource')].get(k.s('Seed')) or [None, None])[1]}
                       for i, s in enumerate(ships)],
         })
-    newest = max(files, key=lambda x: x['mtime'])
+    manual = [x for x in files if x['file_index'] % 2 == 0]
+    newest = manual[0] if manual else max(files, key=lambda x: x['mtime'])     # the file the views show
     for x in files:
         x['newest'] = x is newest
     return {'slot': slot, 'files': files}
@@ -438,6 +445,33 @@ def point_files(point: Path) -> list[SaveFile]:
     return out
 
 
+def plan_delete_slot(folder: SaveFolder, slot: int) -> Plan:
+    """Delete one slot (its manual and automatic save, with their manifests). A full backup of the
+    slot is made first and can be restored from the start screen. accountdata.hg is never touched."""
+    plan = Plan('delete_slot', folder.path)
+    if not 1 <= slot <= 15:
+        plan.messages.append(msg('block', 'slot_invalid'))
+        return plan
+    names = [n for fi in files_of_slot(slot) for n in file_names(fi) if (folder.path / n).is_file()]
+    if not any(n.startswith('save') for n in names):
+        plan.messages.append(msg('block', 'slot_empty_delete', slot=slot))
+        return plan
+    _game_check(plan)
+    try:
+        from .meta import Meta
+        cur = next(folder.file(fi) for fi in files_of_slot(slot) if folder.file(fi).exists())
+        name = Meta.load(cur.mf_path.read_bytes(), cur.meta_index).name
+    except Exception:  # noqa: BLE001
+        name = ''
+    plan.messages.append(msg('danger', 'delete_slot_what', slot=slot, name=name or '-', files=', '.join(names)))
+    plan.messages.append(msg('ok', 'delete_slot_backup'))
+    plan.messages.append(msg('warn', 'delete_slot_cloud'))
+    plan.delete_files = names
+    plan.summary = msg('info', 'chg_delete_slot', slot=slot, name=name or '-')
+    plan.dest_slot = slot
+    return plan
+
+
 def plan_restore_to(folder: SaveFolder, point_id: str, dest_slot: int) -> Plan:
     """Restore a backup into any slot (re-encrypting the manifest for the destination)."""
     plan = Plan('restore_to', folder.path)
@@ -556,6 +590,17 @@ def apply(plan: Plan) -> dict:
             report['written'].append(n)
         return report
 
+    if plan.delete_files:
+        report['backup'] = str(safety.backup(folder, plan.delete_files, plan.action))
+        for n in plan.delete_files:
+            if not (Path(report['backup']) / n).is_file():           # never delete what was not backed up
+                raise RuntimeError('backup_failed')
+        for n in plan.delete_files:
+            (folder / n).unlink()
+            report['written'].append(n)
+        report['deleted'] = list(plan.delete_files)
+        return report
+
     for c in plan.changes:  # nothing changed on disk since the preview?
         if c.source.changed_on_disk():
             raise RuntimeError('changed_on_disk')
@@ -579,3 +624,18 @@ def apply(plan: Plan) -> dict:
         if not ok:
             raise RuntimeError('verify_after_write_failed')
     return report
+
+
+def manual_only(plan: Plan, files: list, differs) -> list | None:
+    """When the autosave (odd file) and the manual save (even file: ship exit, save point, beacon) disagree on what an
+    edit touches, keep only the manual save and say so. None when the files differ and there is no such pair."""
+    if len(files) < 2 or not any(differs(f) for f in files[1:]):
+        return files
+    manual = [f for f in files if f.file_index % 2 == 0]
+    auto = [f for f in files if f.file_index % 2 == 1]
+    if not manual or not auto:
+        return None
+    from .savefile import file_names
+    plan.messages.append(msg('warn', 'save_manual_only', file=file_names(manual[0].file_index)[0],
+                             auto=file_names(auto[0].file_index)[0]))
+    return manual

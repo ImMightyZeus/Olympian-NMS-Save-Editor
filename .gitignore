@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# runtime files created next to the launcher
+olympian_log.txt
+gamedata_check_report.txt
+*.lnk
+
+# personal saves used by the tests: never publish them
+tests/fixture/*
+!tests/fixture/README.md
+
+# build output
+dist/

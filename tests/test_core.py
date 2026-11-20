@@ -9,7 +9,7 @@ import pytest
 from olympian.core import hgfile, jspan, meta, safety, ops
 from olympian.core.coords import Address, galaxies
 from olympian.core.keys import OBF, mapping
-from olympian.core.savefile import SaveFolder, SaveFile, verify_pair
+from olympian.core.savefile import SaveFolder, SaveFile, verify_pair, files_of_slot, file_names
 
 FIX = Path(__file__).parent / 'fixture'
 
@@ -310,7 +310,7 @@ def _stage_and_save(folder, ship, op, **params):
 
 def test_ship_actions_respect_protections(folder):
     for ship, op in [(3, 'expand'), (3, 'delete'), (3, 'duplicate'), (3, 'seed'), (3, 'copy_tech'),
-                     (1, 'expand'), (1, 'copy_tech'), (10, 'repair'),
+                     (1, 'expand'), (1, 'copy_tech'), (10, 'repair'), (4, 'unlock'),
                      (0, 'set_class'), (5, 'set_class'), (0, 'set_sc')]:          # class/SC editing removed
         plan = SH.plan_ship(folder, 1, ship, op, {'seed': '0x1', 'cls': 'S', 'from': 0})
         assert plan.blocked, (ship, op)
@@ -324,38 +324,113 @@ def test_ship_rename_only_touches_that_name(folder):
     assert [s for i, s in enumerate(after) if i != 5] == [s for i, s in enumerate(before) if i != 5]
 
 
+def _damage(folder, ship=0, fi_slot=1):
+    """Make one installed module of a ship damaged in both files of the slot (as a crashed ship has it)."""
+    from olympian.core import jsonedit as JE
+    s = Session(folder, fi_slot)
+    views = s.views()
+    k = views[0].keys
+    sh = views[0].psd()[k.s('ShipOwnership')][ship]
+    j = next(i for i, x in enumerate(sh[k.s('Inventory_TechOnly')][k.s('Slots')])
+             if x[k.s('Type')][k.s('InventoryType')] == 'Technology' and isinstance(x.get(k.s('DamageFactor')), float))
+    path = [k.s('BaseContext'), k.s('PlayerStateData'), k.s('ShipOwnership'), ship, k.s('Inventory_TechOnly'),
+            k.s('Slots'), j, k.s('DamageFactor')]
+    for fi in range(len(views)):
+        plan = JE.plan_json_edit(folder, fi_slot, {'file': fi, 'path': path, 'value': 0.5}, files=s.views())
+        assert not plan.blocked, plan.messages
+        s.stage(plan)
+    assert all(v['ok'] for v in s.save()['verified'])
+    return j
+
+
+def _dmg(it, k):
+    return it[k.s('Type')][k.s('InventoryType')] == 'Technology' and \
+        (it.get(k.s('DamageFactor'), 0) > 0 or not it.get(k.s('FullyInstalled'), True))
+
+
 def test_ship_repair_and_unlock(folder):
-    # damage a module and lock cells on the exotic (ship 7) through a crafted edit, then repair it
-    f = SaveFile(folder.path, 1).load()
-    k = f.keys
-    plan = SH.plan_ship(folder, 1, 7, 'repair')
+    """Repair fixes damaged modules only; enabling cells is a separate action that leaves damage alone."""
+    _damage(folder, 0)
+    before, _, k = _ships(folder)
+    ship = next((i for i, s in enumerate(before) if s[k.s('Resource')][k.s('Filename')]
+                 and any(_dmg(x, k) for g in SH.GRIDS for x in s[k.s(g)][k.s('Slots')])), None)
+    if ship is None:
+        pytest.skip('no damaged technology in the fixture saves')
+    plan = SH.plan_ship(folder, 1, ship, 'repair')
     assert not plan.blocked
-    before, _, _ = _ships(folder)
-    inv = before[7][k.s('Inventory')]
     ops.apply(plan)
     after, _, _ = _ships(folder)
-    a = after[7][k.s('Inventory')]
-    assert len(a[k.s('ValidSlotIndices')]) == a[k.s('Width')] * a[k.s('Height')] >= len(inv[k.s('ValidSlotIndices')])
-    assert all(x[k.s('DamageFactor')] == 0 for x in after[7][k.s('Inventory_TechOnly')][k.s('Slots')]
-               if x[k.s('Type')][k.s('InventoryType')] == 'Technology')
-    # corvette repair never changes its grid
-    plan = SH.plan_ship(folder, 1, 4, 'repair')
+    for g in SH.GRIDS:
+        assert not any(_dmg(x, k) for x in after[ship][k.s(g)][k.s('Slots')])
+        assert after[ship][k.s(g)][k.s('ValidSlotIndices')] == before[ship][k.s(g)][k.s('ValidSlotIndices')]
+        # only DamageFactor / FullyInstalled may differ
+        strip = lambda xs: [{kk: v for kk, v in x.items() if kk not in (k.s('DamageFactor'), k.s('FullyInstalled'))} for x in xs]
+        assert strip(after[ship][k.s(g)][k.s('Slots')]) == strip(before[ship][k.s(g)][k.s('Slots')])
+    assert [s for i, s in enumerate(after) if i != ship] == [s for i, s in enumerate(before) if i != ship]
+    assert SH.plan_ship(folder, 1, ship, 'repair').messages[-1]['code'] == 'ship_repair_nothing'
+    # enable cells on the exotic (ship 7): damage untouched, grid complete
+    plan = SH.plan_ship(folder, 1, 7, 'unlock')
+    assert not plan.blocked
     ops.apply(plan)
     after2, _, _ = _ships(folder)
-    assert after2[4][k.s('Inventory')][k.s('ValidSlotIndices')] == after[4][k.s('Inventory')][k.s('ValidSlotIndices')]
+    a = after2[7][k.s('Inventory')]
+    assert len(a[k.s('ValidSlotIndices')]) == a[k.s('Width')] * a[k.s('Height')]
+    assert after2[7][k.s('Inventory_TechOnly')][k.s('Slots')] == after[7][k.s('Inventory_TechOnly')][k.s('Slots')]
+    # corvettes: repair allowed, enabling cells is not
+    assert SH.plan_ship(folder, 1, 4, 'unlock').blocked
+
+
+def test_inventory_repair_one_module(folder):
+    from olympian.core import inventories as INV
+    _damage(folder, 0)
+    files = ops.load_slot(folder, 1)
+    k = files[0].keys
+    target = None
+    for c in INV.containers(files[0], tech=True):
+        for x in c['inv'][k.s('Slots')]:
+            if _dmg(x, k) and not c.get('blocked'):
+                target = c, x
+                break
+        if target:
+            break
+    if not target:
+        pytest.skip('no damaged technology in the fixture saves')
+    c, x = target
+    cell = [x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]]
+    s = Session(folder, 1)
+    plan = INV.plan_inventory(folder, 1, 'repair', {'inv': c['id'], 'cell': cell}, files=s.views())
+    assert not plan.blocked, plan.messages
+    s.stage(plan)
+    rep = s.save()
+    assert all(v['ok'] for v in rep['verified'])
+    files2 = ops.load_slot(folder, 1)
+    c2 = next(cc for cc in INV.containers(files2[0], tech=True) if cc['id'] == c['id'])
+    y = next(i for i in c2['inv'][k.s('Slots')] if [i[k.s('Index')][k.s('X')], i[k.s('Index')][k.s('Y')]] == cell)
+    assert not _dmg(y, k)
+    assert {kk: v for kk, v in y.items() if kk not in (k.s('DamageFactor'), k.s('FullyInstalled'))} == \
+           {kk: v for kk, v in x.items() if kk not in (k.s('DamageFactor'), k.s('FullyInstalled'))}
+    # a healthy module is refused
+    plan = INV.plan_inventory(folder, 1, 'repair', {'inv': c['id'], 'cell': cell}, files=Session(folder, 1).views())
+    assert plan.blocked
 
 
 def test_ship_expand_s_only(folder):
     before, _, k = _ships(folder)
     plan = SH.plan_ship(folder, 1, 5, 'expand')          # class C -> blocked
     assert plan.blocked
-    _stage_and_save(folder, 7, 'expand')                  # exotic S 7x5 -> cargo 10x12; tech untouched
+    fixed = SH._sc_fixed(before[7], k)
+    _stage_and_save(folder, 7, 'expand')                  # exotic S 7x5 -> cargo 10x12; tech 10x6 only with its 4 SC
     after, _, _ = _ships(folder)
     inv = after[7][k.s('Inventory')]
     assert (inv[k.s('Width')], inv[k.s('Height')], len(inv[k.s('ValidSlotIndices')])) == (10, 12, 120)
     cells = [(x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in inv[k.s('Slots')]]
     assert all(0 <= x < 10 and 0 <= y < 12 for x, y in cells)
-    assert after[7][k.s('Inventory_TechOnly')] == before[7][k.s('Inventory_TechOnly')]
+    t0, t1 = before[7][k.s('Inventory_TechOnly')], after[7][k.s('Inventory_TechOnly')]
+    if fixed:
+        assert (t1[k.s('Width')], t1[k.s('Height')], len(t1[k.s('ValidSlotIndices')])) == (10, 6, 60)
+        assert t1[k.s('Slots')] == t0[k.s('Slots')] and t1[k.s('SpecialSlots')] == t0[k.s('SpecialSlots')]
+    else:
+        assert t1 == t0
 
 
 def test_ship_recharge(folder):
@@ -673,9 +748,14 @@ def test_inventory_files_differ_blocked(folder):
     k = files[0].keys
     it = _byid(files[0])['chest6']['inv'][k.s('Slots')][0]
     to = list(_first_free(_byid(files[0])['chest6'], k))
+    pair = [files[0], other[1]]
     p = INV.plan_inventory(folder, 1, 'move', {'src': 'chest6', 'from': list(INV._xy(it, k)), 'dst': 'chest6', 'to': to},
-                           files=[files[0], other[1]])
-    assert p.blocked and p.messages[-1]['code'] == 'inv_files_differ'
+                           files=pair)
+    if {f.file_index % 2 for f in pair} == {0, 1}:      # autosave + manual save: only the manual save is edited
+        assert not p.blocked and len(p.changes) == 1 and p.changes[0].target_index % 2 == 0
+        assert any(m['code'] == 'inv_manual_only' for m in p.messages)
+    else:
+        assert p.blocked and p.messages[-1]['code'] == 'inv_files_differ'
 
 
 def test_inventory_organize_merges_and_sorts(folder):
@@ -784,8 +864,10 @@ def test_inventory_gather_group(folder):
     for cid, c in C.items():
         if c['kind'] in ('suit', 'ship'):
             assert c['inv'] == _byid(files[0])[cid]['inv']
-    # only storage containers can gather; bad group / scope rejected
+    # exosuit and ships cannot gather; bad group / scope rejected
     assert INV.plan_inventory(folder, 1, 'gather', {'inv': 'suit', 'group': grp}, files=files).blocked
+    assert all(INV.plan_inventory(folder, 1, 'gather', {'inv': cid, 'group': grp}, files=files).blocked
+               for cid, c in _byid(files[0]).items() if c['kind'] == 'ship')
     assert INV.plan_inventory(folder, 1, 'gather', {'inv': 'chest6', 'group': 'nope'}, files=files).blocked
 
 
@@ -1380,3 +1462,383 @@ def test_legacy_folders_migrate(folder):
     # old info files still work for revert / annotate
     safety.annotate(p / safety.BACKUP_DIR / old.name, slot=1)
     assert safety.point_dir(p, f'{safety.BACKUP_DIR}/{old.name}')
+
+
+# ------------------------------------------------- game data check tool (tools/gamedata_check.py) -----------
+def _check_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('gamedata_check', Path(__file__).resolve().parent.parent / 'tools' / 'gamedata_check.py')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_gamedata_check_versions_and_assets():
+    gc = _check_tool()
+    order = ['v7.04.1-pre3', 'v7.10.0-pre1', 'v7.14.0-pre1', 'v7.14.0', '7.15']
+    assert sorted(order, key=gc.vkey) == order
+    assert gc.vkey('12.3.0') < gc.vkey('13.0.0') and gc.vkey('1.1.3') == gc.vkey('v1.1.3')
+    win = gc.WINDOWS
+    assert gc.mbinc_asset(set()) is None
+    assert gc.mbinc_asset({8}) == ('MBINCompiler.exe' if win else 'MBINCompiler-linux')
+    assert gc.mbinc_asset({8, 10}) == ('MBINCompiler-dotnet10.exe' if win else 'MBINCompiler-linux-dotnet10')
+    assert set(gc.MSG) and all(len(v) == 2 and all(v) for v in gc.MSG.values())
+
+
+def test_gamedata_check_icon_set_matches_shipped_zip():
+    import zipfile
+    from olympian.core import gamedata
+    gc = _check_tool()
+    d = gamedata.load()
+    try:
+        shipped = set(zipfile.ZipFile(gamedata.ICONS).namelist())
+    except OSError:
+        pytest.skip('no icons.zip')
+    ship_types = {'textures/ui/frontend/icons/shiptypes/' + n[len('shiptype~'):-5] + '.dds'
+                  for n in shipped if n.startswith('shiptype~')}
+    names = ship_types | {'textures/ui/frontend/icons/shiptypes/sub/type.x.dds', 'textures/ui/frontend/icons/other.dds'}
+    assert set(gc.icon_jobs(d, names)) == shipped
+    assert gc.data_difference(d, d) is None
+    changed = dict(d, items={k: v for k, v in list(d['items'].items())[:-1]})
+    assert 'items' in gc.data_difference(changed, d)
+
+
+def test_inventory_gather_into_freighter_and_exocraft(folder):
+    files = ops.load_slot(folder, 1)
+    k = files[0].keys
+    C = _byid(files[0])
+    targets = [cid for cid, c in C.items() if c['kind'] in ('freighter', 'vehicle')]
+    assert targets
+    done = 0
+    for cid in targets:
+        srcs = INV.gather_sources(C, cid, 'all')
+        groups = collections.Counter(INV.item_group(x[k.s('Id')], INV._type(x, k))
+                                     for s in srcs for x in C[s]['inv'][k.s('Slots')])
+        grp = next((g for g, _n in groups.most_common() if g), None)
+        if not grp:
+            continue
+        p = INV.plan_inventory(folder, 1, 'gather', {'inv': cid, 'group': grp, 'from': 'all'}, files=files)
+        if p.blocked:                    # full or nothing to bring is a valid answer, never an error
+            assert {m['code'] for m in p.messages} & {'inv_gather_full', 'inv_gather_none'}, p.messages
+            continue
+        new = _apply(files, p)
+        assert _inv_totals(new) == _inv_totals(files)
+        N = _byid(new[0])
+        cells = [INV._xy(x, k) for x in N[cid]['inv'][k.s('Slots')]]
+        assert len(cells) == len(set(cells))
+        assert set(cells) <= C[cid]['valid'] | {INV._xy(x, k) for x in C[cid]['inv'][k.s('Slots')]}
+        for other, c in N.items():                     # tech grids are never touched
+            if c['kind'] in INV.TECH_KINDS:
+                assert c['inv'] == C[other]['inv']
+        done += 1
+    assert done
+
+
+def test_ship_grid_marks_damaged_tech():
+    from olympian.core import ships as SH
+    sf = SaveFolder(FIX)
+    seen = 0
+    for idx in sf.file_indices():
+        f = sf.file(idx).load()
+        k = f.keys
+        for s in f.psd()[k.s('ShipOwnership')]:
+            if not s[k.s('Resource')][k.s('Filename')]:
+                continue
+            sm = SH.summary(s, k)
+            flagged = sum(1 for it in sm['tech_items'] if it[7]) + sum(1 for it in sm['cargo_items'] if it[8])
+            assert flagged == sm['Inventory']['damaged'] + sm['Inventory_TechOnly']['damaged']
+            seen += flagged
+    if not seen:
+        pytest.skip('no damaged technology in the fixture saves')
+
+
+def test_ship_tech_uninstall_rules(folder):
+    from olympian.core import inventories as INV
+    files = ops.load_slot(folder, 1)
+    k = files[0].keys
+    checked = set()
+    for c in INV.containers(files[0], tech=True):
+        if c['kind'] != 'shiptech' or not c['inv'][k.s('Slots')]:
+            continue
+        kind = INV._ship_kind(c)
+        if kind in checked:
+            continue
+        for it in c['inv'][k.s('Slots')]:
+            if (gamedata_item(it, k) or {}).get('core'):
+                continue
+            cell = list(INV._xy(it, k))
+            p = INV.plan_inventory(folder, 1, 'delete', {'inv': c['id'], 'cell': cell}, files=files)
+            codes = {m['code'] for m in p.messages}
+            if kind is None:
+                assert p.blocked and 'inv_delete_corvette' in codes
+            else:
+                assert not p.blocked, p.messages
+                assert 'inv_uninstall_what' in codes
+            checked.add(kind)
+            break
+    assert checked
+
+
+def gamedata_item(it, k):
+    from olympian.core import gamedata
+    return gamedata.item(it[k.s('Id')])
+
+
+# --------------------------------------------------------------- v0.9.0: protection, backups, summary ---------
+def test_totp_rfc6238_vectors_and_lock(tmp_path):
+    from olympian.core import lock as LK
+    sec = b'12345678901234567890'
+    for t, full in [(59, '94287082'), (1111111109, '07081804'), (1111111111, '14050471'),
+                    (1234567890, '89005924'), (2000000000, '69279037')]:
+        assert LK.totp(sec, t) == full[-6:]
+    L = LK.Lock(tmp_path / 'lock.json')
+    r = L.begin('4821')
+    secret = LK._unb32(r['key'].replace(' ', ''))
+    rec = L.confirm(LK.totp(secret))
+    raw = (tmp_path / 'lock.json').read_text()
+    assert '4821' not in raw and secret.hex() not in raw and r['key'].replace(' ', '') not in raw
+    L2 = LK.Lock(tmp_path / 'lock.json')
+    with pytest.raises(ValueError):
+        L2.unlock('0000', LK.totp(secret))
+    assert L2.unlock('4821', LK.totp(secret))
+    L3 = LK.Lock(tmp_path / 'lock.json')
+    assert L3.recover(rec[0]) and L3.recovery_left() == len(rec) - 1
+    with pytest.raises(ValueError):
+        L3.recover(rec[0])
+
+
+def test_backup_purge_keeps_newest_and_points(folder, tmp_path):
+    names = [n for n in ('save.hg', 'mf_save.hg') if (folder.path / n).is_file()]
+    made = []
+    for i in range(14):
+        d = safety.backup(folder.path, names, f'test{i:02d}')
+        made.append(d.name)
+    pt = safety.create_point(folder.path, names, 'mine', 1)
+    plan = safety.purge_plan(folder.path)
+    autos = safety._autos(folder.path)
+    assert len(plan['local']['remove']) == len(autos) - safety.KEEP_BACKUPS
+    done = safety.purge(folder.path)
+    left = [d.name for d in safety._autos(folder.path)]
+    assert len(left) == safety.KEEP_BACKUPS and left == sorted(left) and made[-1] in left
+    assert pt.is_dir()                                    # a restore point made by hand is never purged
+    assert done['local']['removed'] == len(plan['local']['remove'])
+    u = safety.usage(folder.path)['local']
+    assert u['n_backups'] >= safety.KEEP_BACKUPS and u['backups'] > 0
+
+
+def test_extra_backup_location(folder, tmp_path):
+    extra = tmp_path / 'usb'
+    extra.mkdir()
+    with pytest.raises(ValueError):
+        safety.check_extra(str(folder.path / '_x'), folder.path)
+    (folder.path / 'inside').mkdir()
+    with pytest.raises(ValueError):
+        safety.check_extra(str(folder.path / 'inside'), folder.path)
+    safety.EXTRA = safety.check_extra(str(extra), folder.path)
+    try:
+        d = safety.backup(folder.path, ['save.hg'], 'mirror_test')
+        copy = safety.extra_root(folder.path) / safety.BACKUP_DIR / d.name / 'save.hg'
+        assert copy.read_bytes() == (d / 'save.hg').read_bytes()
+        import shutil as _sh
+        _sh.rmtree(d)                                     # gone locally: still listed and restorable from the extra copy
+        pts = [p for p in safety.list_points(folder.path) if p['id'].endswith(d.name)]
+        assert pts and pts[0]['extra'] and safety.point_dir(folder.path, pts[0]['id']).is_dir()
+    finally:
+        safety.EXTRA = None
+
+
+def test_delete_slot_backs_up_first(folder):
+    names = [n for fi in files_of_slot(1) for n in file_names(fi) if (folder.path / n).is_file()]
+    data = {n: (folder.path / n).read_bytes() for n in names}
+    plan = ops.plan_delete_slot(folder, 1)
+    assert not plan.blocked and set(plan.delete_files) == set(names)
+    assert 'accountdata.hg' not in plan.delete_files
+    rep = ops.apply(plan)
+    assert not any((folder.path / n).exists() for n in names)
+    assert all((Path(rep['backup']) / n).read_bytes() == b for n, b in data.items())
+    assert ops.plan_delete_slot(folder, 1).blocked          # nothing left to delete
+
+
+def test_overview_reads_currencies_and_fleet(folder):
+    from olympian.core import overview as OV
+    o = OV.describe(ops.load_slot(folder, 1))
+    assert isinstance(o['units'], int) and 0 <= o['units'] <= 0xFFFFFFFF
+    assert isinstance(o['nanites'], int) and isinstance(o['quicksilver'], int)
+    assert {r['id'] for r in o['reputation']} <= set(OV.REPUTATION)
+    assert o['primary_ship'] is None or o['primary_ship']['type'] != 'corvette' or o['corvettes']
+    assert all(c['type'] == 'corvette' for c in o['corvettes'])
+
+
+def test_lot_states():
+    from olympian.core import settlements as ST2
+    assert ST2.lot_state(0) == {'built': False, 'cls': None, 'up': None, 'ready': False}
+    assert ST2.lot_state(0x35)['built'] is False
+    assert ST2.lot_state(0x400007F) == {'built': True, 'cls': 'C', 'up': None, 'ready': False}
+    assert ST2.lot_state(0x410007F) == {'built': True, 'cls': 'C', 'up': 'B', 'ready': False}
+    assert ST2.lot_state(0xC10007F) == {'built': True, 'cls': 'C', 'up': 'B', 'ready': True}
+    assert ST2.lot_state(0xC30007F) == {'built': True, 'cls': 'B', 'up': None, 'ready': False}
+    assert ST2.lot_state(0xC70007F) == {'built': True, 'cls': 'B', 'up': 'A', 'ready': False}
+    assert ST2.lot_state(0x3DF0007F) == {'built': True, 'cls': 'A', 'up': 'S', 'ready': True}
+    assert ST2.lot_state(0x1DF0007F) == {'built': True, 'cls': 'A', 'up': 'S', 'ready': False}
+    assert ST2.lot_state(0x3FF0007F) == {'built': True, 'cls': 'S', 'up': None, 'ready': False}
+
+
+def test_lots_learn_pairs(folder, tmp_path):
+    from olympian.core import settlements as ST2
+    ST2.LOTS_PATH = tmp_path / 'lots.json'
+    try:
+        d = ST2.describe(ops.load_slot(folder, 1), 'es', 'es')
+        for s in d['settlements']:
+            assert len(s['lots']) == 48
+        learned = json.loads(ST2.LOTS_PATH.read_text())
+        offered = [(s['uid'], x['i'], x['type']) for s in d['settlements'] for x in s['lots'] if x['offered']]
+        assert offered and all(learned[u][str(i)] == t for u, i, t in offered)
+    finally:
+        ST2.LOTS_PATH = None
+
+
+def test_game_sentences_follow_interface_language(folder):
+    from olympian.core import settlements as ST2
+    files = ops.load_slot(folder, 1)
+    en = ST2.describe(files, 'en', 'es')
+    es = ST2.describe(files, 'es', 'es')
+    a = [x for s in en['settlements'] for x in s['advice'] if x.get('p', {}).get('game')]
+    b = [x for s in es['settlements'] for x in s['advice'] if x.get('p', {}).get('game')]
+    assert [x['p']['game'] for x in a] == [x['p']['game'] for x in b]      # sentences: interface language
+
+
+def test_lots_learned_from_backup_history(folder, tmp_path):
+    """Pairs named by older copies (backups, restore points) are learned too, each file read once."""
+    from olympian.core import settlements as ST2
+    ST2.LOTS_PATH = tmp_path / 'lots.json'
+    try:
+        names = [n for n in ('save.hg', 'mf_save.hg', 'save2.hg', 'mf_save2.hg') if (folder.path / n).is_file()]
+        safety.backup(folder.path, names, 'history_test')
+        n = ST2.learn_history([folder.path / safety.BACKUP_DIR, folder.path / safety.POINTS_DIR])
+        assert n >= 1
+        learned = json.loads(ST2.LOTS_PATH.read_text())
+        d = ST2.describe(ops.load_slot(folder, 1), 'es', 'es')
+        offered = [(s['uid'], x['i'], x['type']) for s in d['settlements'] for x in s['lots'] if x['offered']]
+        assert offered and all(learned[u][str(i)] == t for u, i, t in offered)
+        assert ST2.learn_history([folder.path / safety.BACKUP_DIR]) == 0          # already read
+    finally:
+        ST2.LOTS_PATH = None
+
+
+def test_copy_over_needs_protection(folder, tmp_path, monkeypatch):
+    """Copying over an occupied slot or deleting one: blocked unless protection is on or 'I live alone' is set."""
+    monkeypatch.setenv('APPDATA', str(tmp_path))
+    from olympian import server as SRV
+    app = SRV.App.__new__(SRV.App)
+    SRV.App.__init__(app)
+    app.settings['folder'] = str(folder.path)
+    src = next(fi for fi in files_of_slot(1) if folder.file(fi).exists())
+    over = app.plan({'action': 'copy_slot', 'params': {'src_file': src, 'dest_slot': 2}})
+    if over is None:
+        pytest.skip('plan entry point not found')
+    assert any(m['code'] == 'needs_protection' for m in over['messages'])
+    empty = app.plan({'action': 'copy_slot', 'params': {'src_file': src, 'dest_slot': 9}})
+    assert not any(m['code'] == 'needs_protection' for m in empty['messages'])
+    app.settings['allow_unprotected'] = True
+    over2 = app.plan({'action': 'copy_slot', 'params': {'src_file': src, 'dest_slot': 2}})
+    assert not any(m['code'] == 'needs_protection' for m in over2['messages']) and not over2['needs_code']
+
+
+def test_ship_transfer_copies_ship_with_loot(folder):
+    """A ship goes into a free ship slot of another save byte for byte; with move it leaves the source."""
+    src_files = ops.load_slot(folder, 1)
+    src = max(src_files, key=lambda f: f.mtime_hg)
+    k = src.keys
+    ships_src = src.psd()[k.s('ShipOwnership')]
+    ship = next(i for i, s in enumerate(ships_src) if s[k.s('Resource')][k.s('Filename')]
+                and SH.ship_type(s[k.s('Resource')][k.s('Filename')]) != 'corvette'
+                and i != src.psd()[k.s('PrimaryShip')])
+    before2 = [f.psd()[k.s('ShipOwnership')] for f in ops.load_slot(folder, 2)]
+    plan = SH.plan_ship_transfer(folder, 1, ship, [2])
+    if plan.blocked and any(m['code'] == 'ship_transfer_full' for m in plan.messages):
+        pytest.skip('no free ship slot in the second fixture save')
+    assert not plan.blocked, plan.messages
+    rep = ops.apply(plan)
+    assert all(v['ok'] for v in rep['verified'])
+    for f, before in zip(ops.load_slot(folder, 2), before2):
+        after = f.psd()[k.s('ShipOwnership')]
+        new = [i for i, (a, b) in enumerate(zip(after, before)) if a != b]
+        assert len(new) == 1 and after[new[0]] == ships_src[ship]          # loot included, nothing else touched
+    # move: copy again and remove from the source
+    plan = SH.plan_ship_transfer(folder, 1, ship, [2], move=True)
+    if not plan.blocked:
+        ops.apply(plan)
+        s1 = max(ops.load_slot(folder, 1), key=lambda f: f.mtime_hg).psd()[k.s('ShipOwnership')]
+        assert not s1[ship][k.s('Resource')][k.s('Filename')]
+    corv = next((i for i, s in enumerate(ships_src) if SH.ship_type(s[k.s('Resource')][k.s('Filename')] or '') == 'corvette'), None)
+    if corv is not None:
+        assert SH.plan_ship_transfer(folder, 1, corv, [2]).blocked
+
+
+def test_seed_history(tmp_path):
+    from olympian.core import seedlog
+    seedlog.PATH = tmp_path / 'seeds.json'
+    try:
+        ch = {'kind': 'ship', 'index': 3, 'model': 'MODELS/X.SCENE.MBIN', 'name': 'A', 'old': '0x1', 'new': '0x2'}
+        seedlog.record('st_1', 1, ch)
+        seedlog.record('st_1', 1, {**ch, 'old': '0x2', 'new': '0x3'})
+        seedlog.record('st_1', 1, {**ch, 'old': '0x3', 'new': '0x1'})            # back to the original: no duplicate
+        h = seedlog.history('st_1', 1, [{'index': 3, 'model_path': 'MODELS/X.SCENE.MBIN'}])
+        assert [x['seed'] for x in h[3]] == ['0x1', '0x2', '0x3'] and h[3][0]['original']
+        assert seedlog.history('st_1', 1, [{'index': 3, 'model_path': 'MODELS/Y.SCENE.MBIN'}]) == {}
+    finally:
+        seedlog.PATH = None
+
+
+def test_race_and_ui_icons(folder):
+    from olympian.core import overview as OV
+    o = OV.describe(ops.load_slot(folder, 1))
+    assert o['race'] is None or o['race']['raw'].endswith('_BASE')
+    assert all(GD.ui_icon(n) for n in GD.UI_ICONS)
+
+
+def test_ship_autosave_differs_edits_manual_only(folder):
+    from olympian.core import ships as SHP
+    files = ops.load_slot(folder, 1)
+    if len(files) < 2:
+        pytest.skip('slot with one file')
+
+    def mutate(psd, k):
+        psd[k.s('ShipOwnership')][0][k.s('Name')] = 'autosave name'
+    other = _crafted(folder, mutate)
+    pair = [files[0], other[1]]
+    p = SHP.plan_ship(folder, 1, 0, 'rename', {'name': 'Nueva'}, files=pair)
+    if {f.file_index % 2 for f in pair} == {0, 1}:
+        assert not p.blocked and len(p.changes) == 1 and p.changes[0].target_index % 2 == 0
+        assert any(m['code'] == 'save_manual_only' for m in p.messages)
+    else:
+        assert p.blocked
+
+
+def test_ship_broken_cells_repaired_like_the_game(folder):
+    """Salvaged ships: ^SHIPSLOT_DMG placeholders + BlockedByBrokenTech specials. Repair removes both, keeps TechBonus."""
+    from olympian.core import ships as SHP
+
+    def mutate(psd, k):
+        inv = psd[k.s('ShipOwnership')][0][k.s('Inventory')]
+        x, y = inv[k.s('ValidSlotIndices')][-1][k.s('X')], inv[k.s('ValidSlotIndices')][-1][k.s('Y')]
+        inv[k.s('Slots')] = [s for s in inv[k.s('Slots')] if (s[k.s('Index')][k.s('X')], s[k.s('Index')][k.s('Y')]) != (x, y)]
+        inv[k.s('Slots')].append({k.s('Type'): {k.s('InventoryType'): 'Product'}, k.s('Id'): '^SHIPSLOT_DMG2',
+                                  k.s('Amount'): 1, k.s('MaxAmount'): 1, k.s('DamageFactor'): 0.0,
+                                  k.s('FullyInstalled'): True, k.s('Index'): {k.s('X'): x, k.s('Y'): y}})
+        inv[k.s('SpecialSlots')] = list(inv[k.s('SpecialSlots')]) + [
+            {k.s('Type'): {k.s('InventorySpecialSlotType'): 'BlockedByBrokenTech'}, k.s('Index'): {k.s('X'): x, k.s('Y'): y}}]
+    files = _crafted(folder, mutate)
+    k = files[0].keys
+    before = SHP.summary(files[0].psd()[k.s('ShipOwnership')][0], k)
+    assert before['Inventory']['broken'] == 1 and before['Inventory']['super'] == 0
+    n_sc = before['Inventory_TechOnly']['super']
+    p = SHP.plan_ship(folder, 1, 0, 'repair', {}, files=files)
+    assert not p.blocked and p.changes
+    for c in p.changes:
+        s = json.loads(c.new_raw.rstrip(b'\0').decode('utf-8', 'surrogateescape'))
+        after = SHP.summary(s[k.s('BaseContext')][k.s('PlayerStateData')][k.s('ShipOwnership')][0], k)
+        assert after['Inventory']['broken'] == 0 and after['Inventory']['used'] == before['Inventory']['used'] - 1
+        assert after['Inventory_TechOnly']['super'] == n_sc
+        assert c.json[k.s('BaseContext')][k.s('PlayerStateData')][k.s('ShipOwnership')][0] == \
+            s[k.s('BaseContext')][k.s('PlayerStateData')][k.s('ShipOwnership')][0]

@@ -14,12 +14,13 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .core import gamedata, hgfile, inventories, jsonedit, jsonview, missions, ops, safety, settlements, ships
+from .core import gamedata, hgfile, inventories, jsonedit, jsonview, missions, ops, overview, safety, seedlog, settlements, ships
+from .core.lock import Lock
 from .core.coords import Address, galaxies, GLYPHS
 from .core.savefile import SaveFolder, default_roots, files_of_slot, file_names
 from .core.session import Session
 
-VERSION = '0.8.0'
+VERSION = '0.9.0'
 WEB = Path(__file__).resolve().parent / 'web'
 PLAN_TTL = 15 * 60
 
@@ -60,6 +61,68 @@ class App:
         self.stopping = False
         self.lock = threading.RLock()
         self.migrated: set[str] = set()
+        self.applock = Lock(settings_path().with_name('lock.json'))
+        self.unlocked = not self.applock.enabled
+        self.recovered = False                 # unlocked with a recovery code (lock must be set up again)
+        self.fails, self.wait_until = 0, 0.0
+        self._set_extra()
+        settlements.LOTS_PATH = settings_path().with_name('lots.json')
+        seedlog.PATH = settings_path().with_name('seeds.json')
+
+    def _set_extra(self):
+        p = self.settings.get('backup_extra')
+        safety.EXTRA = Path(p) if p and Path(p).is_dir() else None
+
+    def _failed(self):
+        self.fails += 1
+        if self.fails >= 5:                    # slow down guessing: 30 s after every fifth miss
+            self.wait_until = time.time() + 30
+            self.fails = 0
+
+    def _lock_state(self) -> dict:
+        return {'enabled': self.applock.enabled, 'unlocked': self.unlocked, 'recovered': self.recovered,
+                'recovery_left': self.applock.recovery_left(),
+                'wait': max(0, int(self.wait_until - time.time()))}
+
+    def _lock_api(self, route: str, body: dict):
+        L = self.applock
+        if route == '/api/lock/unlock':
+            if time.time() < self.wait_until:
+                raise PermissionError('lock_wait')
+            try:
+                L.unlock(str(body.get('pin') or ''), str(body.get('code') or ''))
+            except ValueError:
+                self._failed()
+                raise
+            self.unlocked, self.fails = True, 0
+            return self._lock_state()
+        if route == '/api/lock/recover':
+            if time.time() < self.wait_until:
+                raise PermissionError('lock_wait')
+            try:
+                L.recover(str(body.get('code') or ''))
+            except ValueError:
+                self._failed()
+                raise
+            self.unlocked, self.recovered, self.fails = True, True, 0
+            return self._lock_state()
+        if not self.unlocked:
+            raise PermissionError('locked')
+        if route == '/api/lock/begin':
+            if L.enabled and not self.recovered:
+                raise PermissionError('lock_already')
+            return L.begin(str(body.get('pin') or ''), 'NMS')
+        if route == '/api/lock/confirm':
+            if L.enabled and self.recovered:   # replaced: the old configuration goes
+                L.disable(recovered=True)
+            codes = L.confirm(str(body.get('code') or ''))
+            self.recovered = False
+            return {'recovery': codes, **self._lock_state()}
+        if route == '/api/lock/disable':
+            L.disable(str(body.get('pin') or ''), str(body.get('code') or ''), recovered=self.recovered)
+            self.recovered = False
+            return self._lock_state()
+        raise LookupError(route)
 
     # -- folder ------------------------------------------------------------------------------
     def folder(self) -> SaveFolder:
@@ -83,6 +146,14 @@ class App:
                 print('migration postponed:', e, flush=True)
         return SaveFolder(path)
 
+    def text_lang(self) -> str:
+        """Language of the game's sentences (advice, objectives): the interface language, keeping the
+        Spanish variant chosen for game terms. Names keep following term_lang."""
+        term = self.settings.get('term_lang') or 'es'
+        if self.settings.get('ui_lang') == 'en':
+            return 'en'
+        return term if term.startswith('es') else 'es'
+
     def _session(self) -> Session:
         if self.session is None:
             raise LookupError('no_session')
@@ -101,6 +172,10 @@ class App:
             return self._api(method, route, body)
 
     def _api(self, method: str, route: str, body: dict):
+        if route.startswith('/api/lock/') and method == 'POST':
+            return self._lock_api(route, body)
+        if not self.unlocked and route not in ('/api/ping', '/api/bye', '/api/state'):
+            raise PermissionError('locked')
         if route == '/api/ping':
             self.last_ping = time.time()
             self.bye_at = None
@@ -116,8 +191,9 @@ class App:
                 pass
             return {'version': VERSION, 'folder': folder, 'roots': [str(r) for r in default_roots()],
                     'game_running': safety.game_running(), 'lz4': hgfile.HAVE_LZ4,
-                    'session': self.session.slot if self.session else None,
-                    'settings': {k: self.settings.get(k) for k in ('ui_lang', 'term_lang', 'lang_chosen')}}
+                    'session': self.session.slot if self.session else None, 'lock': self._lock_state(),
+                    'settings': {k: self.settings.get(k) for k in ('ui_lang', 'term_lang', 'lang_chosen', 'backup_extra',
+                                                                'allow_unprotected', 'lock_offered')}}
         if route == '/api/settings' and method == 'POST':
             if body.get('ui_lang') in ('es', 'en'):
                 self.settings['ui_lang'] = body['ui_lang']
@@ -125,6 +201,19 @@ class App:
                 self.settings['term_lang'] = body['term_lang']
             if body.get('lang_chosen'):
                 self.settings['lang_chosen'] = True
+            for key in ('allow_unprotected', 'lock_offered'):
+                if key in body:
+                    self.settings[key] = bool(body.get(key))
+            if 'backup_extra' in body:
+                v = str(body.get('backup_extra') or '').strip()
+                if v:
+                    try:
+                        folder = self.folder().path
+                    except FileNotFoundError:
+                        folder = None
+                    v = str(safety.check_extra(v, folder))
+                self.settings['backup_extra'] = v or None
+                self._set_extra()
             save_settings(self.settings)
             return {'ok': True}
         if route == '/api/folder' and method == 'POST':
@@ -143,7 +232,7 @@ class App:
                 lang = 'es'
             alt = 'en' if lang.startswith('es') else 'es'      # search finds items in both languages
             return {'status': gamedata.status(self.settings.get('game_dir')), 'lang': lang,
-                    'names': gamedata.names(lang), 'names_alt': gamedata.names(alt)}
+                    'names': gamedata.names(lang), 'names_alt': gamedata.names(alt), 'tips': gamedata.tips(lang)}
         if route == '/api/galaxies':
             return {'galaxies': galaxies(), 'glyphs': GLYPHS}
         if route == '/api/slots':
@@ -201,12 +290,25 @@ class App:
             if route == '/api/session/json/export':
                 return {'text': jsonview.export(j, list(body.get('path') or []), bool(body.get('names')))}
         if route == '/api/session/missions/steps' and method == 'POST':
-            return missions.steps(str(body.get('id') or ''), int(body.get('progress', -1)),
-                                  self.settings.get('term_lang') or 'es')
+            return missions.steps(str(body.get('id') or ''), int(body.get('progress', -1)), self.text_lang())
         if route == '/api/session/missions':                                   # phase 4
             return missions.describe(self._session().views(), self.settings.get('term_lang') or 'es')
+        if route == '/api/session/seeds':
+            sess = self._session()
+            v = sess.views()[0]
+            k = v.keys
+            lst = [{'index': i, 'model_path': sh[k.s('Resource')][k.s('Filename')]}
+                   for i, sh in enumerate(v.psd()[k.s('ShipOwnership')])]
+            return {'history': seedlog.history(self.folder().path.name, sess.slot, lst)}
+        if route == '/api/session/overview':
+            return overview.describe(self._session().views(), self.settings.get('term_lang') or 'es')
         if route == '/api/session/settlements':                                # phase 5
-            return settlements.describe(self._session().views(), self.settings.get('term_lang') or 'es')
+            sess = self._session()
+            base = self.folder().path
+            ex = safety.extra_root(base)
+            settlements.learn_history([base / safety.BACKUP_DIR, base / safety.POINTS_DIR] +
+                                      ([ex / safety.BACKUP_DIR, ex / safety.POINTS_DIR] if ex else []))
+            return settlements.describe(sess.views(), self.settings.get('term_lang') or 'es', self.text_lang())
         if route == '/api/session/addable' and method == 'POST':
             return inventories.addable(self._session().views(), str(body.get('inv') or ''))
         if route == '/api/session/inventories':
@@ -232,6 +334,13 @@ class App:
             plan = self.plans.pop(str(body.get('id')), None)
             if plan is None or time.time() - plan.created > PLAN_TTL:
                 raise ValueError('plan_expired')
+            if plan.needs_code and not self.applock.code_ok(str(body.get('code') or '')):
+                self.plans[plan.id] = plan           # the user can type the code again
+                raise ValueError('lock_bad_code')
+            if plan.delete_files and self.session and self.session.slot == plan.dest_slot:
+                if self.session.dirty:
+                    raise PermissionError('session_dirty')
+                self.session = None
             if plan.staged:
                 if not self.session or plan.changes and plan.changes[0].target_index not in self.session.work:
                     raise ValueError('plan_expired')
@@ -253,6 +362,18 @@ class App:
             return report
         if route == '/api/points':
             return {'points': self._points()}
+        if route == '/api/backups':
+            f = self.folder()
+            return {'usage': safety.usage(f.path), 'purge': safety.purge_plan(f.path), 'keep': safety.KEEP_BACKUPS,
+                    'needs_code': self.applock.enabled}
+        if route == '/api/backups/purge' and method == 'POST':
+            f = self.folder()
+            if self.applock.enabled and not self.applock.code_ok(str(body.get('code') or '')):
+                raise ValueError('lock_bad_code')
+            if safety.game_running():
+                raise PermissionError('game_running')
+            done = safety.purge(f.path)
+            return {'done': done, 'usage': safety.usage(f.path)}
         if route == '/api/points/create' and method == 'POST':
             f = self.folder()
             slot = int(body['slot'])
@@ -310,8 +431,24 @@ class App:
             plan = ops.plan_copy_slot(f, int(p['src_file']), int(p['dest_slot']), str(p.get('name', '')))
         elif a == 'restore_to':
             plan = ops.plan_restore_to(f, str(p['point']), int(p['dest_slot']))
+        elif a == 'delete_slot':
+            plan = ops.plan_delete_slot(f, int(p['slot']))
+        elif a == 'ship_transfer':
+            s = self._session()
+            plan = ships.plan_ship_transfer(f, s.slot, int(p['ship']), [int(x) for x in p.get('dest_slots') or []],
+                                            bool(p.get('move')))
+            if s.dirty:
+                plan.messages.append(ops.msg('block', 'ship_transfer_save_first'))
         else:
             raise LookupError(a)
+        # overwriting or deleting a whole slot: only with protection on, or with "I live alone" chosen in Settings
+        overwrites = a == 'delete_slot' or (a == 'copy_slot' and any(
+            f.file(fi).exists() for fi in ops.files_of_slot(int(p['dest_slot'])) if 1 <= int(p['dest_slot']) <= 15))
+        if overwrites and not (self.applock.enabled or self.settings.get('allow_unprotected')):
+            plan.messages.append(ops.msg('block', 'needs_protection'))
+        if self.applock.enabled and (overwrites or a == 'restore_to' or (a == 'ship' and p.get('op') == 'delete')
+                                     or (a == 'ship_transfer' and p.get('move'))):
+            plan.needs_code = True
         if not plan.staged and self.session and self.session.dirty \
                 and any(c.target_index in self.session.work for c in plan.changes):
             plan.messages.append(ops.msg('block', 'dest_open_unsaved', slot=self.session.slot))
@@ -343,9 +480,9 @@ def make_handler(app: App):
             path, _, query = self.path.partition('?')
             if path == '/api/live' and method == 'GET':
                 return self._live(query)
-            if (path.startswith('/icons/') or path.startswith('/shipicon/')) and method == 'GET':
+            if (path.startswith('/icons/') or path.startswith('/shipicon/') or path.startswith('/uiicon/')) and method == 'GET':
                 data = gamedata.icon(urllib.parse.unquote(path[7:])) if path.startswith('/icons/') \
-                    else gamedata.ship_icon(path[10:])
+                    else gamedata.ui_icon(path[8:]) if path.startswith('/uiicon/') else gamedata.ship_icon(path[10:])
                 if not data:
                     self.send_response(404)
                     self.send_header('Content-Length', '0')

@@ -55,7 +55,7 @@ async function loadLang(ui, term) {
   S.dict = await fetch(`i18n/${ui}.json`).then(r => r.json());
   const tf = String(term).startsWith('es') ? 'es' : 'en';
   S.terms = tf === ui ? S.dict : await fetch(`i18n/${tf}.json`).then(r => r.json());
-  try { const g = await api('/api/gamedata'); S.names = g.names || {}; S.namesAlt = g.names_alt || {}; S.gd = g.status; } catch (_) { S.names = {}; S.namesAlt = {}; S.gd = null; }
+  try { const g = await api('/api/gamedata'); S.names = g.names || {}; S.namesAlt = g.names_alt || {}; S.tips = g.tips || {}; S.gd = g.status; } catch (_) { S.names = {}; S.namesAlt = {}; S.tips = {}; S.gd = null; }
   document.documentElement.lang = ui;
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
 }
@@ -91,6 +91,7 @@ function shapeParams(p = {}) {
     else if (k === 'when' && typeof o[k] === 'number') o[k] = fmtDate(o[k]);
     else if ((k === 'item' || k === 'other') && typeof o[k] === 'string') o[k] = itemName(o[k]);
     else if (k === 'grid') o[k] = t('grid.' + o[k]);
+    else if (k === 'charges' && Array.isArray(o[k])) o[k] = o[k].map(([id, cell, a, m]) => `${itemName(id)} (${cell}: ${a}/${m} → ${m})`).join(', ');
     else if (o[k] && typeof o[k] === 'object' && 'inv' in o[k]) o[k] = invLabel(o[k]);
     else if (k === 'level') o[k] = t('inv.level.' + o[k]);
     else if (k === 'group' && typeof o[k] === 'string') o[k] = t('inv.grp.' + o[k]);
@@ -168,12 +169,23 @@ function swapCells(grid, a, b) {
 async function previewAndApply(action, params, after) {
   let plan;
   try { plan = await api('/api/plan', { action, params }); } catch (e) { return toast(errText(e), true); }
-  const files = !plan.staged && plan.files.length ? `<p class="muted">${t('preview.files')}: <code>${plan.files.map(esc).join(', ')}</code></p>` : '';
+  const files = !plan.staged && plan.files.length ? `<p class="muted">${t(plan.action === 'delete_slot' ? 'preview.files_deleted' : 'preview.files')}: <code>${plan.files.map(esc).join(', ')}</code></p>` : '';
   const note = plan.staged ? `<div class="msg info"><span class="lv">${t('level.info')}</span><span>${t('preview.staged_note')}</span></div>` : '';
   const blocked = plan.blocked ? `<p class="msg block"><span>${t('preview.blocked')}</span></p>` : '';
-  showModal(t('preview.title'), messagesHtml(plan.messages) + note + files + blocked, [
+  const code = plan.needs_code && !plan.blocked ? `<label class="codeask">🔐 ${t('lock.code_again')}<input id="pv-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"></label>` : '';
+  showModal(t('preview.title'), messagesHtml(plan.messages) + note + files + blocked + code, [
     { label: t('common.cancel'), onClick: closeModal },
     { label: plan.staged ? t('preview.add') : t('common.apply'), primary: true, disabled: plan.blocked, onClick: async () => {
+      const typed = plan.needs_code ? ($('#pv-code').value || '').trim() : undefined;
+      if (plan.needs_code && typed.length !== 6) return toast(t('err.lock_bad_code'), true);
+      if (plan.needs_code) {
+        try { const rep = await api('/api/apply', { id: plan.id, code: typed });
+          closeModal();
+          if (rep.staged) { toast(t('editor.staged_toast')); after && await after(); return; }
+          showModal(t('result.title'), resultHtml(rep), [{ label: t('common.close'), primary: true, onClick: async () => { closeModal(); after && await after(); } }]);
+        } catch (e) { toast(errText(e), true); if (String(e.message) !== 'lock_bad_code') closeModal(); else $('#pv-code').select(); }
+        return;
+      }
       lockModal();
       try {
         const rep = await api('/api/apply', { id: plan.id });
@@ -242,6 +254,7 @@ async function showStart() {
         <button class="btn primary" data-act="edit">${t('start.edit')}</button>
         <button class="btn" data-act="backup">${t('start.backup')}</button>
         <button class="btn" data-act="copy">${t('slots.copy')}</button>
+        <button class="btn danger" data-act="delete" ${protectedOk() ? '' : `disabled title="${esc(rawT('start.delete_needs_lock'))}"`}>${t('start.delete')}</button>
       </div></div>`;
   }).join('');
   const kind = p => p.kind === 'point' ? t('points.kind.point') : t('points.kind.auto');
@@ -252,19 +265,48 @@ async function showStart() {
       <td>${esc(p.summary || '—')}</td>
       <td>${fmtHours(p.playtime)}</td>
       <td>${fmtDate(p.created)}</td>
-      <td><span class="tag ${p.kind === 'point' ? 'new' : ''}">${kind(p)}</span></td>
+      <td><span class="tag ${p.kind === 'point' ? 'new' : ''}">${kind(p)}</span>${p.extra ? `<br><span class="muted small">💾 ${t('points.extra')}</span>` : ''}</td>
       <td class="right"><button class="btn" data-restore="${esc(p.id)}">${t('start.restore_to')}</button></td></tr>`).join('');
   main.innerHTML = `
     ${S.gd && S.gd.up_to_date === false ? `<p class="msg warn"><span>${t('gd.old_help')}</span></p>` : ''}
     <h1>${t('start.title')}</h1><p class="help">${t('start.help')}</p>
     <div class="grid">${cards || `<p class="muted">${t('status.no_folder')}</p>`}</div>
     <h2 style="margin-top:34px">${t('start.backups')}</h2><p class="help">${t('start.backups_help')}</p>
+    <div id="bk-usage"></div>
     ${rows ? `<div class="card tablewrap"><table class="table"><thead><tr>
       <th>${t('start.col_save')}</th><th>${t('common.slot')}</th><th>${t('slots.location')}</th><th>${t('slots.playtime')}</th>
       <th>${t('start.col_date')}</th><th>${t('start.col_kind')}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<p class="muted">${t('points.empty')}</p>`}`;
   main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => startAction(+b.closest('[data-slot]').dataset.slot, b.dataset.act));
   main.querySelectorAll('[data-restore]').forEach(b => b.onclick = () => restoreTo(b.dataset.restore));
+  backupUsage($('#bk-usage'), showStart);
+}
+
+/* espacio que ocupan los respaldos y purga (se conservan siempre los más recientes) */
+const fmtBytes = n => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(0, Math.round(n / 1024))} KB`;
+async function backupUsage(box, after) {
+  if (!box) return;
+  let d;
+  try { d = await api('/api/backups', null, { quiet: true }); } catch (e) { box.innerHTML = ''; return; }
+  const line = (k, u) => `<span>${t('bk.' + k)}: <b>${fmtBytes(u.backups + u.points)}</b> <span class="muted small">(${t('bk.detail', { a: u.n_backups, ab: fmtBytes(u.backups), p: u.n_points, pb: fmtBytes(u.points) })})</span></span>`;
+  const rm = Object.values(d.purge).reduce((n, x) => n + x.remove.length, 0), free = Object.values(d.purge).reduce((n, x) => n + x.bytes, 0);
+  box.innerHTML = `<div class="card row bkusage">${Object.entries(d.usage).map(([k, u]) => line(k, u)).join('')}
+    <button class="btn small" id="bk-purge" ${rm ? '' : 'disabled'} title="${esc(rawT('bk.purge_tip', { keep: d.keep }))}">🧹 ${t('bk.purge', { n: rm, size: fmtBytes(free) })}</button></div>`;
+  $('#bk-purge').onclick = () => {
+    const code = d.needs_code ? `<label class="codeask">🔐 ${t('lock.code_again')}<input id="bk-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"></label>` : '';
+    showModal(t('bk.purge_title'), `<div class="stack"><p>${t('bk.purge_help', { n: rm, size: fmtBytes(free), keep: d.keep })}</p>
+      <div class="msg ok"><span class="lv">${t('level.ok')}</span><span>${t('bk.purge_safe', { keep: d.keep })}</span></div>${code}</div>`, [
+      { label: t('common.cancel'), onClick: closeModal },
+      { label: t('bk.purge_ok'), primary: true, danger: true, onClick: async () => {
+        try {
+          const r = await api('/api/backups/purge', { code: d.needs_code ? $('#bk-code').value.trim() : '' });
+          closeModal();
+          const n = Object.values(r.done).reduce((a, x) => a + x.removed, 0), f = Object.values(r.done).reduce((a, x) => a + x.freed, 0);
+          toast(t('bk.purged', { n, size: fmtBytes(f) }));
+          after ? after() : backupUsage(box);
+        } catch (e) { toast(errText(e), true); }
+      } }]);
+  };
 }
 
 function slotOptions(exclude) {
@@ -283,6 +325,8 @@ function startAction(slot, act) {
       { label: t('start.backup'), primary: true, onClick: async () => {
         try { await api('/api/points/create', { slot, label: $('#f-label').value || slotName(s) }); closeModal(); toast(t('slots.point_done')); showStart(); }
         catch (e) { toast(errText(e), true); } } }]);
+  } else if (act === 'delete') {
+    previewAndApply('delete_slot', { slot }, showStart);
   } else if (act === 'copy') {
     const srcs = s.files.map(f => `<option value="${f.file_index}" ${f.newest ? 'selected' : ''}>${esc(f.file)} · ${fmtDate(f.mtime)}</option>`).join('');
     showModal(t('slots.copy'), `<div class="stack">
@@ -327,6 +371,7 @@ async function reloadSession() { S.sess = await api('/api/session'); S.order = n
 function renderTopbar() {
   const s = S.sess;
   $('#editing-name').textContent = `${t('common.slot')} ${s.slot} · ${slotName(s)}`;
+  $('#btn-home').title = rawT('editor.home_tip'); $('#btn-home').setAttribute('aria-label', rawT('editor.home_tip'));
   const save = $('#btn-save');
   save.textContent = s.dirty ? t('editor.save_n', { n: s.changes.length }) : t('editor.save');
   save.disabled = !s.dirty; $('#btn-discard').disabled = !s.dirty;
@@ -356,8 +401,13 @@ function changesHtml() {
 
 /* cambiar de partida / volver al inicio, con lista de cambios pendientes */
 $('#slot-switch').onchange = e => {
-  const target = e.target.value, cur = S.sess.slot;
-  e.target.value = String(cur);
+  const target = e.target.value;
+  e.target.value = String(S.sess.slot);
+  switchTo(target);
+};
+$('#btn-home').onclick = () => switchTo('home');
+function switchTo(target) {
+  const cur = S.sess.slot;
   if (target === String(cur)) return;
   const go = async () => {
     if (target === 'home') { await api('/api/session/close', {}); S.sess = null; return showStart(); }
@@ -369,7 +419,7 @@ $('#slot-switch').onchange = e => {
     { label: t('common.cancel'), onClick: closeModal },
     { label: t('editor.discard_go'), danger: true, onClick: async () => { await api('/api/session/discard', {}); closeModal(); go(); } },
     { label: t('editor.save_go'), primary: true, onClick: () => doSave(go) }]);
-};
+}
 
 async function doSave(after) {
   let plan;
@@ -422,18 +472,26 @@ function changelogHtml() {
 /* -- Resumen -- */
 function viewSummary() {
   const f = newest(S.sess);
+  const row = (img, label, value) => `<div class="ovli"><span class="ovlimg">${img}</span><span class="ovlab">${label}</span><span class="ovval">${value}</span></div>`;
+  const emo = e => `<span class="ovemo">${e}</span>`;
   $('#main').innerHTML = `<h1>${t('summary.title')}</h1><p class="help">${t('summary.help')}</p>
     <div class="grid">
-      <div class="card"><h2>${esc(slotName(S.sess))}</h2><div class="kv">
-        <span>${t('slots.location')}</span><span>${esc(galLabel(f.galaxy))} · ${t('common.system')} ${f.address.system}</span>
-        <span>${t('slots.state')}</span><span>${esc(t('state.' + f.state))}</span>
-        <span>${t('slots.ships')}</span><span>${f.ships.filter(x => x.model).length}</span>
-        <span>${t('slots.playtime')}</span><span>${fmtHours(f.playtime)}</span>
-        <span>${t('slots.freighter')}</span><span>${freighterHtml(f.freighter)}</span></div>
+      <div class="card"><h2>${esc(slotName(S.sess))}</h2>
+        <div class="ovlist" id="ov-list">
+          ${row(emo('📍'), t('slots.location'), `${esc(galLabel(f.galaxy))} · ${t('common.system')} ${f.address.system}`)}
+          ${row(emo('🧍'), t('slots.state'), esc(t('state.' + f.state)))}
+          ${row(emo('🚀'), t('slots.ships'), f.ships.filter(x => x.model).length)}
+          ${row(emo('⏱'), t('slots.playtime'), fmtHours(f.playtime))}
+          <div id="ov-more"></div>
+        </div>
         ${f.name_ok === false ? `<p class="msg warn"><span>${t('slots.name_lost', { name: esc(f.name) })}</span></p>` : ''}
         <button class="btn" id="b-rename">${t('slots.rename')}</button></div>
       <div class="card"><h2>${t('editor.pending')}</h2>${changesHtml()}
-        <h2 style="margin-top:22px">${t('log.title')}</h2>${changelogHtml()}</div></div>`;
+        <h2 style="margin-top:22px">${t('log.title')}</h2>${changelogHtml()}</div></div>
+    <div id="ov" style="margin-top:18px"></div>
+    <div id="bk-usage-sum" style="margin-top:18px"></div>`;
+  overviewCards(row);
+  backupUsage($('#bk-usage-sum'));
   document.querySelectorAll('[data-revert]').forEach(b => b.onclick = () => previewAndApply('revert', { point: b.dataset.revert }, reloadSession));
   $('#b-rename').onclick = () => showModal(t('slots.rename'), `<label>${t('common.name')}<input id="f-name" maxlength="60" value="${esc(f.name || '')}"></label>`, [
     { label: t('common.cancel'), onClick: closeModal },
@@ -441,6 +499,46 @@ function viewSummary() {
 }
 
 /* -- Viaje -- */
+/* resumen ampliado: economía, reputación, naves y multiherramienta; cada dato abre su ventana si existe */
+async function overviewCards(row) {
+  const box = $('#ov'); if (!box) return;
+  let o; try { o = await api('/api/session/overview', null, { quiet: true }); } catch (e) { box.innerHTML = `<p class="muted small">${t('ov.unavailable')}</p>`; return; }
+  if (S.view !== 'summary' || !$('#ov')) return;
+  const f = newest(S.sess), num = v => v == null ? '—' : fmtN(v);
+  const ui = n => `<img class="ovi" src="/uiicon/${n}" alt="" draggable="false" onerror="this.style.visibility='hidden'">`;
+  const tile = (img, label, value, sub, attrs, cls = '') => `<${attrs ? 'a href="#"' : 'div'} class="ovt ${cls} ${attrs ? 'link' : ''}" ${attrs || ''}>
+      <div class="ovimg">${img}</div><div class="ovtx"><span class="ovl">${label}</span><b class="ovv">${value}</b>${sub ? `<span class="ovs">${sub}</span>` : ''}</div>${attrs ? '<span class="ovgo">›</span>' : ''}</${attrs ? 'a' : 'div'}>`;
+  const cls = c => c ? `<span class="ovclass c${esc(c)}">${esc(c)}</span>` : '';
+  const RACEICON = { gek: 'gek', korvax: 'korvax', vykeen: 'vykeen', autophage: 'builder' };
+  const raceImg = o.race && RACEICON[o.race.id] ? ui(RACEICON[o.race.id]) : '<span class="ovemo">👤</span>';
+  const raceName = o.race ? (o.race.id ? t('ov.race.' + o.race.id) : esc(o.race.raw)) : '—';
+  const REP = { TRA_STANDING: 'gek', EXP_STANDING: 'korvax', WAR_STANDING: 'vykeen', BUI_STANDING: 'builder',
+                TGUILD_STAND: 'tradeguild', EGUILD_STAND: 'explorerguild', WGUILD_STAND: 'warriorguild', PIRATE_STAND: 'pirate' };
+  const more = $('#ov-more');
+  if (more) more.innerHTML = row(raceImg, t('ov.race'), raceName)
+    + row(ui('units'), t('ov.units'), num(o.units)) + row(ui('nanites'), t('ov.nanites'), num(o.nanites))
+    + row(ui('quicksilver'), t('ov.quicksilver'), num(o.quicksilver))
+    + `<div class="ovsub">${t('ov.reputation')}</div>`
+    + o.reputation.map(r => row(ui(REP[r.id]), t('ov.rep.' + r.id), num(r.value))).join('');
+  const shipImg = sh => `<img class="ovi ship" src="/shipicon/${sh.type}" alt="" draggable="false" onerror="this.outerHTML=svgIcon('${sh.type}')">`;
+  const shipTile = (label, sh) => tile(shipImg(sh), label, `${esc(sh.name || tt('term.unnamed_ship', { type: tt('term.shiptype.' + sh.type) }))} ${cls(sh.class)}`,
+    esc(tt('term.shiptype.' + sh.type)), `data-goship="${sh.index}"`);
+  box.innerHTML = `
+    <h2 class="ovh">${t('ov.fleet')}</h2>
+    <div class="ovrow">
+      ${o.primary_ship ? shipTile(t('ov.primary_ship'), o.primary_ship) : ''}
+      ${f.freighter ? tile(ui('freighter'), t('slots.freighter'), esc(f.freighter.name || t('slots.freighter')), '', 'data-goinv="freighter"') : ''}
+      ${o.vehicle ? tile(ui('exocraft'), t('ov.vehicle'), esc(o.vehicle.name || o.vehicle.type), o.vehicle.name ? esc(o.vehicle.type) : '', `data-goinv="vehicle${o.vehicle.index}"`) : ''}
+      ${o.corvettes.map(c => shipTile(t('ov.corvette'), c)).join('')}
+      ${o.multitool ? tile(ui('weapon'), t('ov.weapon'), `${esc(o.multitool.name || t('inv.mt', { n: o.multitool.index + 1 }))} ${cls(o.multitool.class)}`, t('ov.no_view_yet'), null) : ''}
+    </div>`;
+  box.querySelectorAll('[data-goship]').forEach(a => a.onclick = e => { e.preventDefault(); S.openShip = +a.dataset.goship; S.view = 'ships'; renderEditor(); });
+  box.querySelectorAll('[data-goinv]').forEach(a => a.onclick = async e => {
+    e.preventDefault(); const id = a.dataset.goinv;
+    S.invOpen = S.invOpen || new Set(['suit', 'freighter']); S.invOpen.add(id); S.view = 'inventories'; renderTopbar(); await viewInventories();
+    const el = document.querySelector(`.invbox[data-inv="${id}"]`); el && el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+}
 function viewTravel() {
   const T = S.travel, cur = newest(S.sess);
   if (T.galaxy == null) T.galaxy = cur.galaxy;
@@ -519,21 +617,92 @@ const svgIcon = type => `<svg viewBox="0 0 64 44" class="shipicon" aria-hidden="
 const icon = type => `<img class="shipemblem" src="/shipicon/${type}" alt="" draggable="false" onerror="this.outerHTML=svgIcon('${type}')">`;
 const shipLabel = sh => sh.name || tt('term.unnamed_ship', { type: tt('term.shiptype.' + sh.type) });
 
+/* adjacency frames: technologies of the same family that touch get a frame of one colour, as in the game;
+   two different groups that touch (even at a corner) never share a colour */
+const ADJ_COLORS = ['#3fd0ff', '#4ee08a', '#e05cff', '#5b8cff', '#ff6fae', '#2fe0c8', '#b8f03a', '#9b7bff', '#ff9f43', '#f5f5f5'];
+function adjFrames(items) {
+  const fam = {};
+  items.forEach(it => { if (it[9]) fam[`${it[0]},${it[1]}`] = it[9]; });
+  const comp = {}, comps = [];
+  for (const k0 of Object.keys(fam)) {
+    if (comp[k0] != null) continue;
+    const id = comps.length, cells = [], stack = [k0]; comp[k0] = id;
+    while (stack.length) {
+      const k = stack.pop(); cells.push(k);
+      const [x, y] = k.split(',').map(Number);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = `${x + dx},${y + dy}`;
+        if (fam[n] === fam[k0] && comp[n] == null) { comp[n] = id; stack.push(n); }
+      }
+    }
+    comps.push(cells);
+  }
+  const color = {};
+  comps.forEach((cells, id) => {
+    if (cells.length < 2) return;
+    const near = new Set();
+    for (const k of cells) {
+      const [x, y] = k.split(',').map(Number);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const c = comp[`${x + dx},${y + dy}`];
+        if (c != null && c !== id && color[c] != null) near.add(color[c]);
+      }
+    }
+    let i = 0; while (near.has(i) && i < ADJ_COLORS.length - 1) i++;
+    color[id] = i;
+  });
+  const out = {};
+  for (const [k, id] of Object.entries(comp)) {
+    if (color[id] == null) continue;
+    const [x, y] = k.split(',').map(Number), same = (dx, dy) => comp[`${x + dx},${y + dy}`] === id;
+    out[k] = { c: ADJ_COLORS[color[id]], e: (same(0, -1) ? '' : 't') + (same(1, 0) ? '' : 'r') + (same(0, 1) ? '' : 'b') + (same(-1, 0) ? '' : 'l') };
+  }
+  return out;
+}
+/* tooltip of a technology, from the game's own data: subtitle, class, description and, for upgrades, the
+   range of each stat (the exact roll depends on each module and is not stored in the save) */
+function fmtRange(stat, a, b) {
+  const one = v => (v > 0 ? '+' : '') + (+v.toFixed(2)).toLocaleString();
+  let f;
+  if (stat === 'Ship_Cargo_Slots' || a > 2 || b > 2) f = v => one(v);
+  else if (a >= 0.5) f = v => one((v - 1) * 100) + '%';
+  else f = v => one(v * 100) + '%';
+  if (a === 1 && b === 1 && stat !== 'Ship_Cargo_Slots') return '';
+  return a === b ? f(a) : `${f(a)} … ${f(b)}`;
+}
+function techTip(id, rid) {
+  const r = realId(id, rid), tp = r && S.tips && S.tips[r];
+  if (!tp) return '';
+  let out = '';
+  if (tp.s) out += '\n' + tp.s;
+  if (tp.c) out += '\n' + rawT('tip.class', { c: tp.c });
+  if (tp.d) out += '\n\n' + tp.d;
+  if (tp.r && tp.r.length) out += '\n\n' + rawT('tip.ranges') + tp.r.map(([st, a, b]) => {
+    const v = fmtRange(st, a, b); return `\n• ${rawT('statn.' + st)}${v ? ': ' + v : ''}`; }).join('');
+  return out;
+}
 function invGrid(ship, grid, inv, items, withSc) {
+  const adj = grid === 'tech' ? adjFrames(items) : {};
   const sc = new Set((withSc ? inv.sc : []).map(c => c.join(','))), valid = new Set(inv.valid_cells.map(c => c.join(',')));
   const at = Object.fromEntries(items.map(it => [`${it[0]},${it[1]}`, it]));
-  let h = `<div class="igrid" data-ship="${ship}" data-grid="${grid}" style="grid-template-columns:repeat(${inv.w},var(--cell))">`;
+  let h = `<div class="igrid fluid" data-ship="${ship}" data-grid="${grid}" style="grid-template-columns:repeat(${inv.w},minmax(0,1fr))">`;
   for (let y = 0; y < inv.h; y++) for (let x = 0; x < inv.w; x++) {
     const k = `${x},${y}`, it = at[k];
-    const cls = `c ${sc.has(k) ? 'sc' : ''} ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''}`;
-    let inner = '';
+    const grp = it && grid === 'cargo' ? it[7] : undefined, dmg = !!(it && (grid === 'tech' ? it[7] : it[8]));
+    const low = !!(it && grid === 'tech' && it[8]);
+    const a = adj[k];
+    const cls = `c ${sc.has(k) ? 'sc' : ''} ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''} ${dmg ? 'dmg' : ''} ${low ? 'low' : ''} ${a ? 'adj ' + [...a.e].map(e => 'a' + e).join(' ') : ''}`;
+    let inner = '', chg = '';
     if (it) {
       const [, , id, a, m, kind, rid] = it;
       const qty = grid === 'cargo' && kind !== 'Technology' && a > 1 ? `<b class="qty">${a}</b>` : '';
-      const bar = grid === 'tech' && kind === true && m > 0 ? `<i class="chg" style="width:${Math.max(0, Math.min(100, a / m * 100))}%"></i>` : '';
-      inner = itemIcon(id, rid, qty + (realId(id, rid) ? bar : ''));
+      const pct = grid === 'tech' && kind === true && m > 0 ? Math.max(0, Math.min(100, Math.round(a / m * 100))) : null;
+      const bar = pct != null ? `<i class="chg" style="width:${pct}%"></i>${pct < 100 ? `<b class="pct">${pct}%</b>` : ''}` : '';
+      if (pct != null) chg = '\n' + rawT('grid.charge', { a: Math.max(0, a), m, p: pct });
+      inner = itemIcon(id, rid, qty + bar + (dmg ? '<b class="dmgi">!</b>' : ''));
     }
-    h += `<span class="${cls}" data-cell="${k}" ${it ? 'draggable="true"' : ''} title="${x + 1}·${y + 1}${it ? ' — ' + esc(itemName(it[2], it[6])) + (grid === 'cargo' && it[3] > 1 ? ' ×' + it[3] : '') + (catText(it[7], grid === 'tech' ? 'Technology' : it[5]) ? '\n' + esc(catText(it[7], grid === 'tech' ? 'Technology' : it[5])) : '') : ''}${sc.has(k) ? ' ★' : ''}">${inner}</span>`;
+    const cat = it ? catText(grp, grid === 'tech' ? 'Technology' : it[5]) : '';
+    h += `<span class="${cls}" data-cell="${k}" ${a ? `style="--adj:${a.c}"` : ''} ${it ? 'draggable="true"' : ''} title="${x + 1}·${y + 1}${it ? ' — ' + esc(itemName(it[2], it[6])) + (grid === 'cargo' && it[3] > 1 ? ' ×' + it[3] : '') + (dmg ? '\n' + esc(rawT('grid.damaged')) : '') + esc(chg) + (grid === 'tech' ? esc(techTip(it[2], it[6])) : '') + (low ? '\n' + esc(rawT('grid.low')) : '') + (cat ? '\n' + esc(cat) : '') : ''}${sc.has(k) ? ' ★' : ''}">${inner}</span>`;
   }
   return h + '</div>';
 }
@@ -564,42 +733,101 @@ function modulesHtml(I) {
 }
 function shipPanel(sh, f) {
   const I = sh.info, can = op => I && I.allowed.includes(op);
+  const lowNames = x => x === I.Inventory_TechOnly ? I.tech_items.filter(it => it[8]).map(it => itemName(it[2], it[6])).join(', ') : '';
+  const cellsInfo = x => `<span>${t('ship.cells', { used: x.used, valid: x.valid, total: x.w * x.h })}</span>${x.damaged ? `<span class="bad">${t('ship.damaged', { n: x.damaged })}</span>` : ''}${x.low ? `<span class="warnc">${t('ship.low', { n: x.low })}</span>` : ''}`;
   const g = (x, lbl, note = '') => `<div class="gridstat"><b>${lbl}</b><span>${t('ship.cells', { used: x.used, valid: x.valid, total: x.w * x.h })}</span>${note}
-    ${x.damaged ? `<span class="bad">${t('ship.damaged', { n: x.damaged })}</span>` : ''}${x.low ? `<span class="warnc">${t('ship.low', { n: x.low })}</span>` : ''}
+    ${x.damaged ? `<span class="bad">${t('ship.damaged', { n: x.damaged })}</span>` : ''}${x.low ? `<span class="warnc" title="${esc(lowNames(x))}">${t('ship.low', { n: x.low })}: ${esc(lowNames(x))}</span>` : ''}
     </div>`;
   const others = f.ships.filter(o => o.model && o.index !== sh.index && o.info && o.info.kind === 'regular')
     .map(o => `<option value="${o.index}">${o.index + 1}. ${esc(shipLabel(o))} (${o.info.modules.length})</option>`).join('');
   const act = (op, label, extra = '', cls = '', off = false) => can(op)
     ? `<div class="act ${cls} ${op === 'expand' ? 'below' : ''}"><button class="btn small ${cls === 'danger' ? 'danger' : ''}" data-op="${op}" ${off ? 'disabled' : ''}>${label}</button>${extra}</div>` : '';
   const prim = sh.index === f.primary_ship;
+  const sameModel = f.ships.filter(o => o.model && o.model === sh.model && o.index !== sh.index && o.seed && o.seed !== I.seed)
+    .map(o => `<option value="${esc(o.seed)}">${o.index + 1}. ${esc(shipLabel(o))} · ${esc(o.seed)}</option>`).join('');
+  const nDmg = (I.Inventory.damaged || 0) + (I.Inventory_TechOnly.damaged || 0);
+  const nClosed = I.kind === 'corvette' ? 0 : [I.Inventory, I.Inventory_TechOnly].reduce((n, x) => n + Math.max(0, x.w * x.h - x.valid), 0);
   const why = I.kind === 'corvette' ? t('ship.protect_corvette') : I.kind === 'living' ? t('ship.protect_living') : '';
+  const full = I.Inventory.valid >= 120 && I.Inventory.w * I.Inventory.h >= 120 && (!I.sc_fixed || (I.Inventory_TechOnly.valid >= 60 && I.Inventory_TechOnly.w * I.Inventory_TechOnly.h >= 60));
+  const ib = (op, icon, tip, off = false) => can(op)
+    ? `<button class="ibtn" data-op="${op}" title="${esc(tip)}" aria-label="${esc(tip)}" ${off ? 'disabled' : ''}>${icon}</button>` : '';
+  const head = `<div class="shiphead">${icon(sh.type)}<div class="shipttl"><span class="shipline"><b class="shipname ${sh.name ? '' : 'muted'}">${esc(shipLabel(sh))}</b>
+      ${can('rename') ? `<button class="pencil" data-renameship title="${esc(rawT('ship.rename'))}" aria-label="${esc(rawT('ship.rename'))}">✎</button>` : ''}
+      ${ib('repair', '🔧', rawT('ship.repair', { n: nDmg }), !nDmg)}
+      ${ib('unlock', '🔓', rawT('ship.unlock', { n: nClosed }), !nClosed)}
+      ${ib('recharge', '⚡', rawT('ship.recharge') + (I.Inventory_TechOnly.low ? ` (${I.Inventory_TechOnly.low})` : ''), !(I.Inventory.low || I.Inventory_TechOnly.low))}
+      ${ib('expand', '⤢', rawT('ship.expand') + ' — ' + (full ? rawT('ship.expand_max') : I.class === 'S' ? rawT(I.sc_fixed ? 'ship.expand_note_both' : 'ship.expand_note') : rawT('ship.expand_needs_s')), full)}</span>
+      <span class="muted small">${esc(tt('term.shiptype.' + sh.type))} · ${t('ship.class')} ${esc(I.class)}${nDmg ? ` · <span class="bad">⚠ ${nDmg}</span>` : ''}</span></div>
+    </div>
+    <div class="renamebar" data-shiprenamebar hidden><input data-in="name" maxlength="60" value="${esc(sh.name)}" placeholder="${esc(shipLabel(sh))}">
+      <button class="btn small primary" data-op="rename">${t('inv.rename_ok')}</button><button class="btn small" data-renamecancel>${t('common.cancel')}</button></div>`;
   return `<div class="panel" data-panel="${sh.index}" data-scmax="${I.sc_max}">
+    ${head}
     <div class="kv small">
       <span>${t('ship.type')}</span><span>${esc(tt('term.shiptype.' + sh.type))}</span>
       <span>${t('ship.class')}</span><span>${esc(I.class)}</span>
       <span>Seed</span><span><code>${esc(I.seed || '—')}</code></span>
       <span>${t('ship.model')}</span><span><code>${esc(sh.model)}</code></span></div>
     ${statsHtml(I.stats, false)}
-    ${g(I.Inventory, t('ship.general'))}${g(I.Inventory_TechOnly, t('ship.tech'), `<span class="muted small">${t('ship.class_note')}</span>${modulesHtml(I)}`)}
-    <div class="grids"><div class="scbox"><b>${t('ship.sc_title')}</b>
+    <div class="grids" style="--tw:${I.Inventory_TechOnly.w}fr;--cw:${I.Inventory.w}fr"><div class="scbox"><b>${t('ship.sc_title')}</b>
       <span>${t('ship.sc_desc', { n: I.Inventory_TechOnly.super, max: I.sc_max, cls: esc(I.Inventory_TechOnly.cls), shape: scName(I.sc_shape) })}</span>
-      ${invGrid(sh.index, 'tech', I.Inventory_TechOnly, I.tech_items, true)}</div>
-    <div class="scbox"><b>${t('grid.cargo_title')}</b><span class="muted small">${t('grid.drag_hint')}</span>
+      ${invGrid(sh.index, 'tech', I.Inventory_TechOnly, I.tech_items, true)}
+      ${g(I.Inventory_TechOnly, t('ship.tech'), `<span class="muted small">${t('ship.class_note')}</span>${modulesHtml(I)}`)}</div>
+    <div class="scbox"><b>${t('grid.cargo_title')}</b>${cellsInfo(I.Inventory)}<span class="muted small">${t('grid.drag_hint')}</span>
       ${invGrid(sh.index, 'cargo', I.Inventory, I.cargo_items, false)}</div></div>
     ${why ? `<p class="muted small">🛡 ${why}</p>` : ''}
     <div class="acts">
       ${prim ? '' : `<div class="act"><button class="btn small" data-op="primary">★ ${t('ships.set_primary')}</button></div>`}
-      ${act('rename', t('ship.rename'), `<input data-in="name" maxlength="60" value="${esc(sh.name)}" placeholder="${esc(shipLabel(sh))}">`)}
-      ${act('repair', t('ship.repair'))}
-      ${act('recharge', t('ship.recharge'))}
-      ${act('expand', t('ship.expand'), `<span class="muted small">${I.Inventory.valid >= 120 && I.Inventory.w * I.Inventory.h >= 120 ? '✓ ' + t('ship.expand_max') : I.class === 'S' ? t('ship.expand_note') : t('ship.expand_needs_s')}</span>`, '', I.Inventory.valid >= 120 && I.Inventory.w * I.Inventory.h >= 120)}
-      ${act('seed', t('ship.seed'), `<input data-in="seed" value="${esc(I.seed || '')}" placeholder="0x…" spellcheck="false">`)}
+      ${act('seed', t('ship.seed'), `<div class="seedbox"><input data-in="seed" value="${esc(I.seed || '')}" placeholder="0x…" spellcheck="false">${sameModel ? `<select data-seedfrom title="${esc(rawT('ship.seed_from_tip'))}"><option value="">${t('ship.seed_from')}</option>${sameModel}</select>` : ''}<div class="seedhist" data-sh="${sh.index}"></div><span class="muted small">${t('ship.seed_note')}</span></div>`, 'wide')}
       ${act('copy_tech', t('ship.copy_tech'), others ? `<select data-in="from">${others}</select>` : `<span class="muted small">${t('ship.copy_none')}</span>`)}
       ${act('duplicate', t('ship.duplicate'))}
+      ${I.kind !== 'corvette' ? `<div class="act wide xfer" data-xfer><span class="xlabel">📦 ${t('ship.transfer')}</span>
+        <select data-xferdest><option value="">${t('common.loading')}</option></select>
+        <span class="xmode"><label class="chk"><input type="radio" name="xm${sh.index}" value="copy" checked> ${t('ship.transfer_copy_short')}</label>
+        <label class="chk"><input type="radio" name="xm${sh.index}" value="move"> ${t('ship.transfer_move_short')}</label></span>
+        <button class="btn small" data-xfergo disabled>${t('common.preview')}</button>
+        <span class="muted small">${t('ship.transfer_note')}</span></div>` : ''}
       ${act('delete', t('ship.delete'), '', 'danger')}
     </div></div>`;
 }
 
+/* historial de seeds aplicados a cada nave: volver al original o rotar con un clic */
+async function fillSeedHistory() {
+  const boxes = document.querySelectorAll('.seedhist[data-sh]'); if (!boxes.length) return;
+  let h; try { h = (await api('/api/session/seeds', null, { quiet: true })).history; } catch (_) { return; }
+  const f = newest(S.sess);
+  boxes.forEach(box => {
+    const idx = +box.dataset.sh, list = h[idx], sh = f.ships.find(x => x.index === idx);
+    if (!list || !sh || !sh.info) { box.innerHTML = ''; return; }
+    const cur = sh.info.seed, pos = list.findIndex(x => x.seed === cur);
+    const go = d => list[((pos < 0 ? 0 : pos) + d + list.length) % list.length].seed;
+    box.innerHTML = `<div class="sh-head"><b>${t('ship.seed_hist')}</b>
+        <button class="btn small" data-seedgo="${esc(go(-1))}" title="${esc(rawT('ship.seed_prev'))}">◀</button>
+        <button class="btn small" data-seedgo="${esc(go(1))}" title="${esc(rawT('ship.seed_next'))}">▶</button></div>
+      <div class="sh-list">${list.map(x => `<button class="sh-chip ${x.seed === cur ? 'cur' : ''}" data-seedgo="${esc(x.seed)}" ${x.seed === cur ? 'disabled' : ''}>
+        ${x.original ? `<span class="sh-orig">${t('ship.seed_original')}</span>` : ''}<code>${esc(x.seed)}</code></button>`).join('')}</div>`;
+    box.querySelectorAll('[data-seedgo]').forEach(b => b.onclick = async () => {
+      if (b.dataset.seedgo === cur) return;
+      await quickStage('ship', { ship: idx, op: 'seed', seed: b.dataset.seedgo });
+    });
+  });
+}
+/* copiar o mover una nave, con todo lo que lleva, a otras partidas */
+async function transferBox(box, ship) {
+  const sel = box.querySelector('[data-xferdest]'), go = box.querySelector('[data-xfergo]');
+  let slots; try { slots = (await api('/api/slots', null, { quiet: true })).slots; } catch (e) { sel.innerHTML = `<option value="">${esc(errText(e))}</option>`; return; }
+  const dest = slots.filter(s => s.files && s.slot !== S.sess.slot);
+  if (!dest.length) { sel.innerHTML = `<option value="">${t('ship.transfer_none')}</option>`; sel.disabled = true; return; }
+  sel.innerHTML = `<option value="">${t('ship.transfer_pick_dest')}</option>`
+    + dest.map(s => `<option value="${s.slot}">Slot ${s.slot} · ${esc(slotName(s))}</option>`).join('')
+    + (dest.length > 1 ? `<option value="${dest.map(s => s.slot).join(',')}">${t('ship.transfer_all')}</option>` : '');
+  sel.onchange = () => { go.disabled = !sel.value; };
+  go.onclick = () => {
+    if (!sel.value) return;
+    const move = box.querySelector('input[type=radio]:checked').value === 'move';
+    previewAndApply('ship_transfer', { ship, dest_slots: sel.value.split(',').map(Number), move }, reloadSession);
+  };
+}
 function viewShips() {
   const f = newest(S.sess);
   const filled = f.ships.filter(x => x.model);
@@ -611,10 +839,10 @@ function viewShips() {
     const I = sh.info, alert = I && (I.Inventory.damaged + I.Inventory_TechOnly.damaged);
     return `<div class="tile ${prim ? 'primary' : ''} ${open ? 'open' : ''}" draggable="${open ? 'false' : 'true'}" data-idx="${idx}">
       <span class="pos">${pos + 1}</span>${prim ? `<span class="tag new star">★ ${t('ships.primary')}</span>` : ''}
-      <div class="tilehead">${icon(sh.type)}<div>
+      ${open ? '' : `<div class="tilehead">${icon(sh.type)}<div>
         <b class="${sh.name ? '' : 'muted'}">${esc(shipLabel(sh))}</b>
         <span class="muted small">${esc(tt('term.shiptype.' + sh.type))}${I ? ` · ${t('ship.class')} ${esc(I.class)}` : ''}${alert ? ` · <span class="bad">⚠ ${alert}</span>` : ''}</span>
-        ${I && !open ? statsHtml(I.stats, true) : ''}</div></div>
+        ${I ? statsHtml(I.stats, true) : ''}</div></div>`}
       ${I ? `<button class="btn small" data-toggle="${idx}">${open ? t('ship.close') : t('ship.options')}</button>` : ''}
       ${open ? shipPanel(sh, f) : ''}</div>`;
   }).join('');
@@ -657,13 +885,25 @@ function viewShips() {
       await quickStage('ship', { ship: from.ship, op: 'move', grid: from.grid, from: from.cell.split(',').map(Number), to: c.dataset.cell.split(',').map(Number) });
     });
   });
+  document.querySelectorAll('.igrid[data-ship] .c.has').forEach(c => c.addEventListener('contextmenu', e => itemMenu(e, c)));
   document.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () => { const i = +b.dataset.toggle; S.openShip = S.openShip === i ? null : i; viewShips(); });
+  document.querySelectorAll('[data-panel] [data-seedfrom]').forEach(sel => sel.onchange = () => {
+    const inp = sel.closest('.act').querySelector('[data-in="seed"]'); if (sel.value && inp) inp.value = sel.value; });
   document.querySelectorAll('[data-panel] [data-op]').forEach(b => b.onclick = () => {
     const panel = b.closest('[data-panel]'), ship = +panel.dataset.panel, op = b.dataset.op;
     const val = name => { const el = panel.querySelector(`[data-in="${name}"]`); return el ? el.value : undefined; };
     if (op === 'primary') return previewAndApply('set_primary', { ship }, reloadSession);
     previewAndApply('ship', { ship, op, name: val('name'), cls: val('cls'), seed: val('seed'), from: val('from') != null ? +val('from') : undefined }, reloadSession);
   });
+  document.querySelectorAll('[data-panel] [data-renameship]').forEach(b => b.onclick = () => {
+    const bar = b.closest('[data-panel]').querySelector('[data-shiprenamebar]'); bar.hidden = !bar.hidden;
+    if (!bar.hidden) { const i = bar.querySelector('input'); i.focus(); i.select(); } });
+  document.querySelectorAll('[data-panel] [data-renamecancel]').forEach(b => b.onclick = () => { b.closest('[data-shiprenamebar]').hidden = true; });
+  document.querySelectorAll('[data-shiprenamebar] input').forEach(i => i.addEventListener('keydown', e => {
+    if (e.key === 'Enter') i.closest('[data-shiprenamebar]').querySelector('[data-op="rename"]').click();
+    if (e.key === 'Escape') i.closest('[data-shiprenamebar]').hidden = true; }));
+  document.querySelectorAll('[data-panel] [data-xfer]').forEach(box => transferBox(box, +box.closest('[data-panel]').dataset.panel));
+  fillSeedHistory();
   $('#o-undo') && ($('#o-undo').onclick = () => { S.order = null; viewShips(); });
   $('#o-apply') && ($('#o-apply').onclick = () => {
     const empties = f.ships.filter(x => !x.model).map(x => x.index);
@@ -718,7 +958,7 @@ async function viewInventories() {
     shipsC = d.containers.filter(c => c.kind === 'ship'), vehC = d.containers.filter(c => c.kind === 'vehicle'),
     techC = d.containers.filter(c => TECH_KINDS.has(c.kind));
   const box = c => {
-    const label = invLabel(c), used = c.items.length, chest = c.kind === 'chest', gatherable = chest || c.kind === 'corvette';
+    const label = invLabel(c), used = c.items.length, chest = c.kind === 'chest', gatherable = ['chest', 'corvette', 'freighter', 'vehicle'].includes(c.kind);
     const tech = TECH_KINDS.has(c.kind);
     const emb = c.kind === 'ship' ? icon(c.ship_type || 'ship') : '';
     const flag = c.kind === 'mttech' && c.active ? ` <span class="pill blue small">${t('inv.mt_active')}</span>` : '';
@@ -752,16 +992,16 @@ async function viewInventories() {
 }
 function boxGrid(c) {
   const valid = new Set(c.valid.map(v => v.join(','))), at = Object.fromEntries(c.items.map(it => [`${it[0]},${it[1]}`, it]));
-  let h = `<div class="igrid" data-inv="${c.id}" style="grid-template-columns:repeat(${c.w},var(--cell))">`;
+  let h = `<div class="igrid fluid" data-inv="${c.id}" style="grid-template-columns:repeat(${c.w},minmax(0,1fr))">`;
   for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) {
     const k = `${x},${y}`, it = at[k];
     let inner = '', title = `${x + 1}·${y + 1}`;
     if (it) {
-      const [, , id, a, m, kind, rid, grp] = it;
+      const [, , id, a, m, kind, rid, grp, dmg] = it;
       if (kind === 'Technology') {
         const bar = m > 0 && a >= 0 ? `<i class="chg" style="width:${Math.max(0, Math.min(100, a / m * 100))}%"></i>` : '';
-        inner = itemIcon(id, rid, realId(id, rid) ? bar : '');
-        title += ` — ${itemName(id, rid)}${m > 0 && a >= 0 ? ` (${fmtN(a)}/${fmtN(m)})` : ''}`;
+        inner = itemIcon(id, rid, (realId(id, rid) ? bar : '') + (dmg ? '<b class="dmgi">!</b>' : ''));
+        title += ` — ${itemName(id, rid)}${m > 0 && a >= 0 ? ` (${fmtN(a)}/${fmtN(m)})` : ''}${dmg ? '\n' + rawT('grid.damaged') : ''}`;
       } else {
         inner = itemIcon(id, rid, a > 1 ? `<b class="qty">${a > 9999 ? fmtN(a) : a}</b>` : '');
         title += ` — ${itemName(id, rid)} ×${fmtN(a)} (${rawT('inv.limit_tip', { mx: fmtN(m) })})`;
@@ -769,7 +1009,7 @@ function boxGrid(c) {
       const cat = catText(grp, kind);
       if (cat) title += `\n${cat}`;
     }
-    h += `<span class="c ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''} ${it && S.invSel?.[c.id]?.has(k) ? 'sel' : ''}" data-cell="${k}" ${it ? `draggable="true" data-k="${esc(itemKeys(it[2], it[6]))}" data-id="${esc(it[2])}"` : ''} title="${esc(title)}">${inner}</span>`;
+    h += `<span class="c ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''} ${it && it[8] ? 'dmg' : ''} ${it && S.invSel?.[c.id]?.has(k) ? 'sel' : ''}" data-cell="${k}" ${it ? `draggable="true" data-k="${esc(itemKeys(it[2], it[6]))}" data-id="${esc(it[2])}"` : ''} title="${esc(title)}">${inner}</span>`;
   }
   return h + '</div>';
 }
@@ -811,7 +1051,7 @@ function sortDialog(cid) {
   $('#s-key').onchange = help; $('#s-dir').onchange = help; help();
 }
 
-/* «Mover aquí todos los…» (contenedores y almacén de la corbeta): por tipo y, si se quiere, objeto por objeto */
+/* «Mover aquí todos los…» (contenedores, almacén de la corbeta, carguero y exovehículos): por tipo y, si se quiere, objeto por objeto */
 function gatherItems(cid, scope, grp) {
   const kinds = INV_SCOPES[scope], rows = new Map();
   for (const c of S.inv.data.containers) {
@@ -909,9 +1149,19 @@ function moveSelDialog(cid) {
       previewAndApply('inv', { op: 'move_many', src: cid, cells, dst: $('#ms-dst').value }, reloadSession); } }]);
 }
 function closeCtx() { const m = $('#ctxmenu'); if (m) m.remove(); }
+function shipContainer(g) {
+  const i = +g.dataset.ship, sh = newest(S.sess).ships.find(s => s.index === i), I = sh && sh.info;
+  if (!I) return null;
+  if (g.dataset.grid === 'tech')
+    return { id: 'shiptech' + i, kind: 'shiptech', blocked: I.kind === 'corvette', valid: I.Inventory_TechOnly.valid_cells,
+             items: I.tech_items.map(([x, y, id, a, m, , rid, dmg]) => [x, y, id, a, m, 'Technology', rid, null, dmg]) };
+  return { id: 'ship' + i, kind: 'ship', blocked: false, valid: I.Inventory.valid_cells, items: I.cargo_items };
+}
 function itemMenu(ev, cell) {
   ev.preventDefault(); closeCtx();
-  const cid = cell.closest('.igrid').dataset.inv, c = S.inv.data.containers.find(x => x.id === cid);
+  const g = cell.closest('.igrid'), cid = cellTarget(g);
+  const c = g.dataset.inv ? S.inv.data.containers.find(x => x.id === cid) : shipContainer(g);
+  if (!c) return;
   const [x, y] = cell.dataset.cell.split(',').map(Number), it = c.items.find(i => i[0] === x && i[1] === y);
   if (!it) return;
   const [, , id, a, m, kind, rid] = it, movable = kind === 'Substance' || kind === 'Product';
@@ -919,13 +1169,18 @@ function itemMenu(ev, cell) {
   if (TECH_KINDS.has(c.kind) && !movable) {                       // installed technology: only uninstall
     const menu = document.createElement('div');
     menu.id = 'ctxmenu'; menu.className = 'ctxmenu';
-    menu.innerHTML = `<div class="ctxhead">${esc(itemName(id, rid))}</div><button data-op="delete" class="danger" ${c.blocked ? 'disabled' : ''}>${t('inv.op.uninstall')}</button>
+    const dmg = !!it[8];
+    menu.innerHTML = `<div class="ctxhead">${esc(itemName(id, rid))}${dmg ? ` <b class="dmgtag">${t('grid.damaged_short')}</b>` : ''}</div>
+      ${dmg ? `<button data-op="repair">🔧 ${t('inv.op.repair')}</button>` : ''}
+      <button data-op="delete" class="danger" ${c.blocked ? 'disabled' : ''}>${t('inv.op.uninstall')}</button>
       <div class="muted small ctxnote">${t('inv.op.uninstall_note')}</div>`;
     document.body.appendChild(menu);
     const r = menu.getBoundingClientRect();
     menu.style.left = Math.min(ev.clientX, innerWidth - r.width - 8) + 'px';
     menu.style.top = Math.min(ev.clientY, innerHeight - r.height - 8) + 'px';
-    menu.querySelector('[data-op]').onclick = () => { closeCtx(); previewAndApply('inv', { op: 'delete', inv: cid, cell: [x, y] }, reloadSession); };
+    menu.querySelectorAll('[data-op]').forEach(b => b.onclick = () => { closeCtx();
+      const op = b.dataset.op;
+      previewAndApply('inv', { op, inv: cid, cell: [x, y] }, reloadSession); });
     return;
   }
   const opts = [
@@ -1139,18 +1394,36 @@ const misSel = () => S.mis.data.missions.filter(m => S.mis.sel.has(m.i)).map(m =
 function misStateText(m) {
   if (m.state === 'inactive') return `<span class="pill gray">${t('mis.state.inactive')}</span>`;
   if (m.state === 'mark') return `<span class="pill violet" title="${esc(rawT('mis.mark_tip'))}">${t('mis.state.mark')}</span>`;
-  const done = m.n != null && m.progress >= m.n;
-  return `<span class="pill ${done ? 'green' : 'blue'}">${m.n != null ? t('mis.stage_of', { p: m.progress, n: m.n }) : t('mis.stage_n', { p: m.progress })}</span>`;
+  // the game leaves a finished mission at the step where its branch ended, so "X of N" is not progress
+  return `<span class="pill blue" title="${esc(rawT('mis.stage_tip'))}">${t('mis.stage_saved', { p: m.progress })}</span>`;
 }
-function misDraw() {
-  const vis = misVisible(), shown = vis.slice(0, 400);
-  $('#mis-body').innerHTML = shown.map(m => `<tr class="${S.mis.sel.has(m.i) ? 'sel' : ''}" data-i="${m.i}">
+/* misiones distintas con el mismo título (p. ej. las etapas de un capítulo): juntas, bajo un encabezado */
+function misGrouped(list) {
+  const by = new Map();
+  list.forEach(m => { const k = m.title ? fold(m.title) : '#' + m.i; if (!by.has(k)) by.set(k, []); by.get(k).push(m); });
+  const out = [];
+  by.forEach(ms => {
+    const ids = new Set(ms.map(m => m.id));
+    if (ids.size > 1) out.push({ head: ms[0].title, n: ids.size });
+    const order = [...ids];
+    ms.forEach(m => out.push(ids.size > 1 ? { ...m, part: order.indexOf(m.id) + 1, parts: ids.size } : m));
+  });
+  return out;
+}
+function misRow(m) {
+  return `<tr class="${S.mis.sel.has(m.i) ? 'sel' : ''} ${m.part ? 'msub' : ''}" data-i="${m.i}">
       <td><input type="checkbox" ${S.mis.sel.has(m.i) ? 'checked' : ''}></td>
-      <td><div class="mname">${m.title ? esc(m.title) : `<code class="mid">${esc(m.id)}</code>`}</div>${m.title ? `<div class="muted small">${m.sub ? esc(m.sub) + ' · ' : ''}<code>${esc(m.id)}</code></div>` : ''}</td>
+      <td><div class="mname">${m.part ? `<span class="muted">↳ ${t('mis.part', { k: m.part, n: m.parts })}</span>` : m.title ? esc(m.title) : `<code class="mid">${esc(m.id)}</code>`}</div>${m.title ? `<div class="muted small">${m.sub ? esc(m.sub) + ' · ' : ''}<code>${esc(m.id)}</code></div>` : ''}</td>
       <td class="small">${t('mis.g.' + m.group)}</td><td>${misStateText(m)}</td>
       <td class="small">${[m.current ? `<span class="pill orange">${t('mis.f.current')}</span>` : '', m.previous ? `<span class="pill gray">${t('mis.f.previous')}</span>` : '',
-        m.crit ? `<span class="pill red" title="${esc(rawT('mis.crit_tip'))}">${t('mis.f.crit')}</span>` : '', m.dup ? `<span class="pill gray">${t('mis.f.copy', { n: m.copy })}</span>` : ''].join(' ')}</td></tr>`).join('')
-    + (vis.length > shown.length ? `<tr><td colspan="5" class="muted small">${t('mis.more', { n: vis.length - shown.length })}</td></tr>` : '')
+        m.crit ? `<span class="pill red" title="${esc(rawT('mis.crit_tip'))}">${t('mis.f.crit')}</span>` : '', m.dup ? `<span class="pill gray" title="${esc(rawT('mis.copy_tip'))}">${t('mis.f.copy', { n: m.copy })}</span>` : ''].join(' ')}</td></tr>`;
+}
+function misDraw() {
+  const vis = misVisible(), shown = misGrouped(vis.slice(0, 400));
+  $('#mis-body').innerHTML = shown.map(m => m.head
+      ? `<tr class="mgroup"><td></td><td colspan="4"><b>${esc(m.head)}</b> <span class="muted small">· ${t('mis.same_title', { n: m.n })}</span></td></tr>`
+      : misRow(m)).join('')
+    + (vis.length > 400 ? `<tr><td colspan="5" class="muted small">${t('mis.more', { n: vis.length - 400 })}</td></tr>` : '')
     + (vis.length ? '' : `<tr><td colspan="5" class="muted small">${t('mis.none')}</td></tr>`);
   $('#mis-body').querySelectorAll('tr[data-i]').forEach(tr => tr.onclick = e => {
     const i = +tr.dataset.i; if (S.mis.sel.has(i)) S.mis.sel.delete(i); else S.mis.sel.add(i);
@@ -1174,7 +1447,6 @@ async function misSide() {
       ${o.more.length ? `<ul>${o.more.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : '';
   let body;
   if (m.state === 'mark') body = `<p class="muted small">${t('mis.side_mark')}</p>`;
-  else if (m.n != null && m.progress >= m.n) body = `<p class="muted small">${t('mis.side_done')}</p>`;
   else if (!st.now && !st.next) body = `<p class="muted small">${t('mis.side_none')}</p>`;
   else body = block(m.state === 'inactive' ? t('mis.side_start') : t('mis.side_now'), m.state === 'inactive' ? st.next : st.now)
     + (m.state === 'inactive' ? '' : block(t('mis.side_next'), st.next));
@@ -1240,6 +1512,35 @@ function setPerkFx(fx) {
     return `<span class="fx ${good ? 'pos' : 'neg'}">${good ? '▲' : '▼'} ${t('set.stat.' + stat)}${range}</span>`;
   }).join(' ');
 }
+/* los 48 lotes del asentamiento: edificio presente, mejora en curso (engranaje dorado) o aún no activado */
+const LOT_ICON = { Settlement_Hub: '🏛', Settlement_LandingZone: '🛬', Settlement_Bar: '🍸', Settlement_Tower: '🗼', Settlement_Market: '🏪',
+  Settlement_Small: '🏠', Settlement_SmallIndustrial: '🛠', Settlement_Medium: '🏘', Settlement_Large: '🏬', Settlement_Monument: '🗿',
+  Settlement_SheriffsOffice: '🛡', Settlement_Double: '🏢', Settlement_Farm: '🌾', Settlement_Factory: '🏭', Settlement_Clump: '🏚',
+  Settlement_Hub_Builders: '🛸', Settlement_Builders_RoboArm: '🦾' };
+function lotGrid(st) {
+  if (!st.lots) return '';
+  const cells = st.lots.map(l => {
+    const name = l.type ? rawT('bld.' + l.type) : rawT('lot.unknown_type');
+    let tip, cls = 'lot', inner;
+    if (l.built) {
+      tip = `${rawT('lot.n', { n: l.i + 1 })} · ${name} · ${rawT('lot.class', { c: l.cls })}`;
+      if (l.up) tip += l.ready ? ` · ${rawT('lot.ready', { to: l.up })}`
+        : ` · ${rawT('lot.in_progress', { to: l.up })}${l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : ''}`;
+      cls += ' on' + (l.up ? (l.ready ? ' ready' : ' up') : '') + (l.type ? '' : ' unk');
+      inner = `<span class="li">${LOT_ICON[l.type] || '🏢'}</span><b class="lc c${l.cls}">${l.cls}</b>${l.up ? (l.ready ? '<span class="rdy">✔</span>' : '<span class="cog">⚙</span>') : ''}`;
+    } else if (l.building) {
+      tip = `${rawT('lot.n', { n: l.i + 1 })} · ${name} · ${rawT('lot.building')}${l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : ''}`;
+      cls += ' on up build' + (l.type ? '' : ' unk');
+      inner = `<span class="li">${LOT_ICON[l.type] || '🏗'}</span><span class="cog">⚙</span>`;
+    } else {
+      tip = `${rawT('lot.n', { n: l.i + 1 })} · ${rawT('lot.not_active')}${l.offered && l.type ? ' · ' + rawT('lot.offered', { name }) : ''}`;
+      cls += ' off'; inner = '<span class="li">⬚</span>';
+    }
+    return `<div class="${cls}" title="${esc(tip)}">${inner}</div>`;
+  }).join('');
+  const n = st.lots.filter(l => l.built).length, up = st.lots.filter(l => (l.up && !l.ready) || l.building).length, rdy = st.lots.filter(l => l.ready).length, known = st.lots.filter(l => l.built && l.type).length;
+  return `<div class="lotgrid">${cells}</div><p class="muted small">${t('lot.legend', { n, up, rdy, known })}</p>`;
+}
 function setCard(st) {
   const sel = S.set.sel[st.uid] || new Set();
   const stats = st.stats.filter(x => SET_STATS.includes(x.key));
@@ -1273,7 +1574,7 @@ function setCard(st) {
     <div class="setgrid">
       <div><h3>${t('set.stats')}</h3>${stats.map(setStat).join('')}<p class="muted small">${t('set.stats_note')}</p>
         <h3>${t('set.pending')}</h3>${pend}${build}<h3>${t('set.production')}</h3>${prod}</div>
-      <div><h3>${t('set.advisor')}</h3><ul class="advice">${adv}</ul></div>
+      <div><h3>${t('lot.title')}</h3>${lotGrid(st)}<h3>${t('set.advisor')}</h3><ul class="advice">${adv}</ul></div>
     </div>
     <details class="setperks" ${sel.size ? 'open' : ''}><summary>${t('set.perks', { n: st.perks.length, max: S.set.data.max_perks ?? '—' })}</summary>
       <table><thead><tr><th></th><th>${t('set.perk')}</th><th>${t('set.perk_kind')}</th><th>${t('set.perk_fx')}</th></tr></thead><tbody>${perks}</tbody></table>
@@ -1282,7 +1583,7 @@ function setCard(st) {
   </div>`;
 }
 function setRoute(route) {
-  const pill = r => r.state === 'stage' ? `<span class="pill blue">${r.n != null ? t('mis.stage_of', { p: r.progress, n: r.n }) : t('mis.stage_n', { p: r.progress })}</span>`
+  const pill = r => r.state === 'stage' ? `<span class="pill blue" title="${esc(rawT('mis.stage_tip'))}">${t('mis.stage_saved', { p: r.progress })}</span>`
     : `<span class="pill ${r.state === 'end' ? 'green' : 'gray'}">${t('set.route.' + r.state)}</span>`;
   const step = o => o ? `<div class="small">${esc(o.main)}</div>` : '';
   return `<h2>${t('set.routes')}</h2><p class="help">${t('set.routes_help')}</p><div class="card"><table class="setroute"><tbody>
@@ -1509,6 +1810,12 @@ function jvBind() {
   $('#jv-q').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
+/* -- Acerca de (estándar MightyZeus 1.3: créditos completos) -- */
+function aboutHtml() {
+  return `<div class="about"><h3>${t('about.title')}</h3>
+    <p class="muted">Olympian NMS Save Editor — Copyright © 2026 MightyZeus · GPL-3.0</p>
+    <p><b>${t('about.ack')}</b></p>${rawT('about.lines').split('\n').map(l => `<p>${esc(l)}</p>`).join('')}</div>`;
+}
 /* -- Ajustes -- */
 function viewSettings() {
   const st = S.state.settings, L = { es: 'Español', en: 'English', ...{ 'es-ES': LANG_NAMES['es-ES'] } }, LT = LANG_NAMES;
@@ -1519,19 +1826,136 @@ function viewSettings() {
       ${gameDataHtml()}
       <div class="row"><button class="btn" id="s-lang">${t('settings.change_lang')}</button></div>
       ${folderForm()}
-      <p class="muted">${t('settings.version')}: ${esc(S.state.version)} · © 2026 MightyZeus · GPL-3.0 · <a href="https://paypal.me/ImMightyZeus" target="_blank" rel="noopener">${t('settings.donate')}</a></p>
+      ${securityHtml()}
+      <p class="muted">${t('settings.version')}: ${esc(S.state.version)} · © 2026 MightyZeus · GPL-3.0 · <a href="https://paypal.me/ImMightyZeus" target="_blank" rel="noopener">${t('settings.donate')}</a> · <a href="https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor" target="_blank" rel="noopener">GitHub</a></p>
+      ${aboutHtml()}
       ${S.state.lz4 ? '' : `<p class="msg warn"><span>${t('settings.lz4_missing')}</span></p>`}
     </div>`;
   $('#s-lang').onclick = async () => { if (await langModal(false)) renderEditor(); };
   bindFolderForm(async () => { S.sess = null; showStart(); });
+  bindSecurity(viewSettings);
 }
-$('#btn-settings').onclick = async () => {
-  showModal(t('settings.title'), `<div class="stack"><div class="row"><button class="btn" id="s-lang2">${t('settings.change_lang')}</button></div>${folderForm()}
-    <p class="muted">${t('settings.version')}: ${esc(S.state.version)} · © 2026 MightyZeus · GPL-3.0 · <a href="https://paypal.me/ImMightyZeus" target="_blank" rel="noopener">${t('settings.donate')}</a></p></div>`, [{ label: t('common.close'), onClick: closeModal }]);
+$('#btn-settings').onclick = async function openStartSettings() {
+  showModal(t('settings.title'), `<div class="stack"><div class="row"><button class="btn" id="s-lang2">${t('settings.change_lang')}</button></div>${folderForm()}${securityHtml()}
+    <p class="muted">${t('settings.version')}: ${esc(S.state.version)} · © 2026 MightyZeus · GPL-3.0 · <a href="https://paypal.me/ImMightyZeus" target="_blank" rel="noopener">${t('settings.donate')}</a> · <a href="https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor" target="_blank" rel="noopener">GitHub</a></p>${aboutHtml()}</div>`, [{ label: t('common.close'), onClick: closeModal }]);
   $('#s-lang2').onclick = async () => { if (await langModal(false)) showStart(); };
   bindFolderForm(() => { closeModal(); showStart(); });
+  bindSecurity(() => { openStartSettings(); showStart(); });
 };
 
+
+/* ================================================================== PROTECCIÓN (PIN + código 2FA) */
+const codeInput = (id, ph = '000000') => `<input id="${id}" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="${ph}">`;
+function lockScreen() {
+  return new Promise(resolve => {
+    let rec = false;
+    const draw = () => {
+      showModal(t('lock.title'), `<div class="stack lockbox">
+        <p class="muted">${t(rec ? 'lock.recover_help' : 'lock.help')}</p>
+        ${rec ? `<label>${t('lock.recovery_code')}<input id="lk-rec" maxlength="11" placeholder="XXXXX-XXXXX" autocomplete="off"></label>`
+              : `<label>${t('lock.pin')}<input id="lk-pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off"></label>
+                 <label>${t('lock.code')}${codeInput('lk-code')}</label>`}
+        <p class="small"><a href="#" id="lk-alt">${t(rec ? 'lock.use_code' : 'lock.use_recovery')}</a></p></div>`, [
+        { label: t('lock.unlock'), primary: true, onClick: go }]);
+      $('#lk-alt').onclick = e => { e.preventDefault(); rec = !rec; draw(); };
+      const first = $(rec ? '#lk-rec' : '#lk-pin'); first && first.focus();
+      $('#modal-body').onkeydown = e => { if (e.key === 'Enter') go(); };
+    };
+    const go = async () => {
+      try {
+        if (rec) await api('/api/lock/recover', { code: $('#lk-rec').value });
+        else await api('/api/lock/unlock', { pin: $('#lk-pin').value, code: $('#lk-code').value });
+        $('#modal-body').onkeydown = null; closeModal(); await refreshState(); resolve();
+      } catch (e) { toast(errText(e), true); }
+    };
+    draw();
+  });
+}
+const protectedOk = () => !!((S.state.lock && S.state.lock.enabled) || S.state.settings.allow_unprotected);
+/* primera vez: ofrecer la protección y decir qué queda deshabilitado sin ella */
+function protectionOffer() {
+  const done = async () => {
+    try { await api('/api/settings', { lock_offered: true }); await refreshState(); } catch (_) {}
+    showModal(t('lock.offer_after_title'), `<p>${t('lock.offer_after')}</p>`, [{ label: t('common.close'), primary: true, onClick: () => { closeModal(); showStart(); } }]);
+  };
+  showModal(t('lock.offer_title'), `<div class="stack"><p>${t('lock.offer_help')}</p>
+    <p><b>${t('lock.offer_disabled')}</b></p><ul class="small"><li>${t('lock.offer_d1')}</li><li>${t('lock.offer_d2')}</li></ul>
+    <p class="muted small">${t('lock.offer_alone')}</p><p class="muted small">${t('lock.limits')}</p></div>`, [
+    { label: t('lock.offer_later'), onClick: () => { closeModal(); done(); } },
+    { label: t('lock.offer_alone_btn'), onClick: async () => {
+      closeModal();
+      try { await api('/api/settings', { allow_unprotected: true }); } catch (_) {}
+      done(); } },
+    { label: '🔐 ' + t('lock.setup'), primary: true, onClick: () => lockSetup(() => done()) }]);
+}
+function securityHtml() {
+  const L = S.state.lock || {}, ex = S.state.settings.backup_extra || '';
+  const lock = L.enabled
+    ? `<p><span class="pill ok">● ${t('lock.on')}</span> <span class="muted small">${t('lock.left', { n: L.recovery_left })}</span></p>
+       ${L.recovered ? `<p class="msg warn"><span>${t('lock.recovered_note')}</span></p><div class="row"><button class="btn" id="lk-setup">${t('lock.setup_again')}</button><button class="btn danger" id="lk-off">${t('lock.disable')}</button></div>`
+                     : `<div class="row"><button class="btn danger" id="lk-off">${t('lock.disable')}</button></div>`}`
+    : `<p class="muted small">${t('lock.off_help')}</p><div class="row"><button class="btn" id="lk-setup">🔐 ${t('lock.setup')}</button></div>`;
+  const alone = L.enabled ? '' : `<label class="chk"><input type="checkbox" id="lk-alone" ${S.state.settings.allow_unprotected ? 'checked' : ''}> ${t('lock.alone')}</label>
+    <p class="muted small">${t('lock.alone_help')}</p>`;
+  return `<h3>${t('lock.section')}</h3>${lock}${alone}<p class="muted small">${t('lock.limits')}</p>
+    <h3>${t('bk.extra_title')}</h3><p class="muted small">${t('bk.extra_help')}</p>
+    <label>${t('bk.extra')}<input id="bk-extra" value="${esc(ex)}" placeholder="D:\\OlympianNMS_Backups"></label>
+    <div class="row end">${ex ? `<button class="btn" id="bk-extra-off">${t('bk.extra_off')}</button>` : ''}<button class="btn" id="bk-extra-save">${t('settings.folder_save')}</button></div>`;
+}
+function bindSecurity(redraw) {
+  const save = async v => { try { await api('/api/settings', { backup_extra: v }); await refreshState(); toast(t(v ? 'bk.extra_ok' : 'bk.extra_removed')); redraw(); } catch (e) { toast(errText(e), true); } };
+  $('#bk-extra-save') && ($('#bk-extra-save').onclick = () => save($('#bk-extra').value.trim()));
+  $('#bk-extra-off') && ($('#bk-extra-off').onclick = () => save(''));
+  $('#lk-setup') && ($('#lk-setup').onclick = () => lockSetup(redraw));
+  $('#lk-alone') && ($('#lk-alone').onchange = e => {
+    const on = e.target.checked, set = async v => {
+      try { await api('/api/settings', { allow_unprotected: v }); await refreshState(); toast(t(v ? 'lock.alone_on' : 'lock.alone_off')); } catch (er) { toast(errText(er), true); }
+      redraw(); };
+    if (!on) return set(false);
+    e.target.checked = false;
+    showModal(t('lock.alone_title'), `<div class="stack"><p>${t('lock.alone_confirm')}</p>
+      <div class="msg ok"><span class="lv">${t('level.ok')}</span><span>${t('lock.alone_safe')}</span></div></div>`, [
+      { label: t('common.cancel'), onClick: closeModal },
+      { label: t('lock.alone_ok'), primary: true, onClick: () => { closeModal(); set(true); } }]);
+  });
+  $('#lk-off') && ($('#lk-off').onclick = () => {
+    const L = S.state.lock || {};
+    showModal(t('lock.disable'), `<div class="stack"><p>${t('lock.disable_help')}</p>
+      ${L.recovered ? '' : `<label>${t('lock.pin')}<input id="lo-pin" type="password" inputmode="numeric" maxlength="12"></label><label>${t('lock.code')}${codeInput('lo-code')}</label>`}</div>`, [
+      { label: t('common.cancel'), onClick: closeModal },
+      { label: t('lock.disable'), danger: true, primary: true, onClick: async () => {
+        try { await api('/api/lock/disable', L.recovered ? {} : { pin: $('#lo-pin').value, code: $('#lo-code').value });
+          closeModal(); await refreshState(); toast(t('lock.disabled')); redraw(); } catch (e) { toast(errText(e), true); } } }]);
+  });
+}
+function lockSetup(redraw) {
+  showModal(t('lock.setup'), `<div class="stack"><p>${t('lock.setup_help')}</p>
+    <label>${t('lock.new_pin')}<input id="ls-pin" type="password" inputmode="numeric" maxlength="12" autocomplete="new-password"></label>
+    <label>${t('lock.new_pin2')}<input id="ls-pin2" type="password" inputmode="numeric" maxlength="12" autocomplete="new-password"></label></div>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    { label: t('lock.next'), primary: true, onClick: async () => {
+      const a = $('#ls-pin').value, b = $('#ls-pin2').value;
+      if (!/^\d{4,12}$/.test(a)) return toast(t('err.lock_pin_format'), true);
+      if (a !== b) return toast(t('lock.pin_mismatch'), true);
+      let r; try { r = await api('/api/lock/begin', { pin: a }); } catch (e) { return toast(errText(e), true); }
+      let qr = '';
+      try { const q = qrcode(0, 'M'); q.addData(r.uri); q.make(); qr = q.createSvgTag(5, 4); } catch (_) {}
+      showModal(t('lock.setup'), `<div class="stack"><p>${t('lock.scan_help')}</p>
+        <div class="qrbox">${qr}</div>
+        <p class="small">${t('lock.key_help')}<br><code class="lockkey">${esc(r.key)}</code></p>
+        <label>${t('lock.code_first')}${codeInput('ls-code')}</label></div>`, [
+        { label: t('common.cancel'), onClick: closeModal },
+        { label: t('lock.activate'), primary: true, onClick: async () => {
+          let c; try { c = await api('/api/lock/confirm', { code: $('#ls-code').value }); } catch (e) { return toast(errText(e), true); }
+          await refreshState();
+          showModal(t('lock.recovery_title'), `<div class="stack"><p>${t('lock.recovery_help')}</p>
+            <pre class="reccodes">${c.recovery.map(esc).join('\n')}</pre></div>`, [
+            { label: t('lock.recovery_copy'), onClick: () => { navigator.clipboard && navigator.clipboard.writeText(c.recovery.join('\n')).then(() => toast(t('lock.copied'))).catch(() => {}); } },
+            { label: t('lock.recovery_done'), primary: true, onClick: () => { closeModal(); redraw(); } }]);
+        } }]);
+      $('#ls-code').focus();
+    } }]);
+}
 /* ------------------------------------------------------------------ arranque */
 (async function init() {
   try {
@@ -1539,9 +1963,11 @@ $('#btn-settings').onclick = async () => {
     const st = S.state.settings;
     await loadLang(st.ui_lang || 'es', st.term_lang || st.ui_lang || 'es');
     await refreshState();                       // the sidebar was drawn before the texts were loaded
+    if (S.state.lock && S.state.lock.enabled && !S.state.lock.unlocked) await lockScreen();
     const g = await api('/api/galaxies'); S.galaxies = g.galaxies; S.glyphNames = g.glyphs;
     if (!st.lang_chosen) await langModal(true);
     try { S.slots = (await api('/api/slots')).slots; } catch (_) { S.slots = []; }
     if (S.state.session) { await openEditor(S.state.session); } else { await showStart(); }
+    if (!S.state.settings.lock_offered && !(S.state.lock && S.state.lock.enabled)) protectionOffer();
   } catch (e) { document.body.insertAdjacentHTML('beforeend', `<p class="msg block"><span>${esc(e.message)}</span></p>`); }
 })();

@@ -15,8 +15,25 @@ The game keeps the save in memory and overwrites it when it saves again, so chan
 ### I use Steam Cloud. Anything special?
 After saving with Olympian, start the game on **this** PC first, so Steam uploads the new version. If you play on another PC first, Steam may bring back the old save.
 
+If Steam shows a **sync conflict** after editing on this PC, **always choose the local copy** (this PC's): the cloud one is from before the edit and would replace it. This holds when the last thing you did was edit here; if you played on another PC afterwards, the newer one is in the cloud. Hello Games cross-save works much the same: start the game first on the PC where you edited. Either way, Olympian made a backup before the change.
+
 ### Where are my backups?
-In your save folder: `_OlympianBackups` (automatic, one before every save, plus `history.json`) and `_OlympianRestorePoints` (the ones you make). They are never deleted by Olympian; you can remove old ones yourself.
+In your save folder: `_OlympianBackups` (automatic, one before every save, plus `history.json`) and `_OlympianRestorePoints` (the ones you make). Start and Summary show how much space they use. Olympian never deletes them on its own: the **Purge backups** button deletes old automatic backups only when you ask, and always keeps the newest 10 and every backup you made.
+
+In Settings you can choose an **extra folder** (another drive, a USB stick, OneDrive…): every backup is also copied there, so it survives even if the save folder is deleted.
+
+### What does the PIN and code (2FA) protection protect?
+It is optional (Settings). Opening Olympian asks for your PIN and the 6-digit code of an authenticator app (Google Authenticator, Microsoft Authenticator, Authy…), and the code is asked again to delete saves or ships, copy or restore over an occupied slot and purge backups. It works offline and without an account: the app and Olympian share a secret once through a QR code. The PIN is stored only as a verifier and the secret is encrypted with your PIN.
+
+Without protection, deleting saves and copying one over another stay disabled, unless you tick **“I live alone”** in Settings (for people who do not share the PC). A full backup is always made first.
+
+Its limit, plainly: it stops people from using Olympian on your PC, but it does not stop anyone from deleting or changing the saves in File Explorer or with another editor. Lock Windows (Win+L) when you step away and use the extra backup folder.
+
+### I forgot the PIN or lost my phone.
+Use one of your **recovery codes** (the ones Olympian gave you when you turned protection on) on the lock screen. Each one works once; then set up protection again or turn it off in Settings. If you do not have the codes either, close Olympian and delete `%APPDATA%\OlympianNMS\lock.json`: protection is turned off (your saves and backups are not touched).
+
+### How do I update Olympian without losing anything?
+Extract the new version into its own folder (its name carries the version), open it and, once it works, delete the old one. Settings, protection, learned lots and backups live outside the app folder. The first time, the new version prepares its environment (1–3 minutes).
 
 ### I used an older version and had `_ZeusRespaldos` / `_ZeusPuntos` folders.
 They are moved to the new names automatically the first time you open that save folder. Nothing is lost; if a folder is in use the move is retried the next time.

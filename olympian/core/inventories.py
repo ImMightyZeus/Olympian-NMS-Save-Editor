@@ -6,7 +6,7 @@ What can be done here (agreed with the user):
   * drop it on a different item -> the two swap places (both must fit where they go);
   * "sort by" one inventory (name, rarity or value; ascending or descending): equal stacks are merged
     first; technology stays where it is;
-  * "move here all the ..." (storage containers): gathers every item of one group (gases, minerals,
+  * "move here all the ..." (storage containers, corvette storage, freighter, exocraft): gathers every item of one group (gases, minerals,
     crafting parts, upgrade modules by class...) from the other inventories into that container;
   * rename a storage container.
 Moving, sorting and gathering never create or delete anything (verified on every action). On the user's request,
@@ -28,6 +28,7 @@ computed on the parsed JSON and compared with what the byte edit produced; any d
 else -> RuntimeError and nothing is staged.
 """
 from __future__ import annotations
+import json
 
 import copy
 import secrets
@@ -198,7 +199,8 @@ def containers(f: SaveFile, tech: bool = False) -> list[dict]:
         c['w'], c['h'] = inv[k.s('Width')], inv[k.s('Height')]
         c['valid'] = {(v[k.s('X')], v[k.s('Y')]) for v in inv[k.s('ValidSlotIndices')]}
         c['special'] = {(v[k.s('Index')][k.s('X')], v[k.s('Index')][k.s('Y')])
-                        for v in inv.get(k.s('SpecialSlots')) or [] if isinstance(v, dict) and k.s('Index') in v}
+                        for v in inv.get(k.s('SpecialSlots')) or [] if isinstance(v, dict) and k.s('Index') in v
+                        and ((v.get(k.s('Type')) or {}).get(k.s('InventorySpecialSlotType')) or 'TechBonus') == 'TechBonus'}
     return out
 
 
@@ -221,7 +223,9 @@ def describe(files: list[SaveFile], lang: str = 'es') -> dict:
             x, y = _xy(it, k)
             iid, t = it[k.s('Id')], _type(it, k)
             items.append([x, y, iid, it[k.s('Amount')], it[k.s('MaxAmount')], t,
-                          gamedata.resolve(iid), item_group(iid, t)])
+                          gamedata.resolve(iid), item_group(iid, t),
+                          t == 'Technology' and (it.get(k.s('DamageFactor'), 0) > 0
+                                                 or not it.get(k.s('FullyInstalled'), True))])
         out.append({'id': c['id'], 'kind': c['kind'], 'name': c['name'], 'group': c['group'],
                     'ship': c.get('ship'), 'ship_type': c.get('ship_type'), 'vehicle': c.get('vehicle'),
                     'vname': vehicle_name(c['vehicle'], lang) if 'vehicle' in c else '', 'mt': c.get('mt'),
@@ -606,7 +610,7 @@ def _sort(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
     return True
 
 
-GATHER_TARGETS = ('chest', 'corvette')         # storage containers and the corvette storage
+GATHER_TARGETS = ('chest', 'corvette', 'freighter', 'vehicle')   # cargo inventories; not exosuit or ships
 SCOPES = {'chests': ('chest',), 'storage': ('chest', 'freighter', 'corvette'),
           'all': ('chest', 'freighter', 'corvette', 'suit', 'ship', 'vehicle')}
 
@@ -856,6 +860,9 @@ def _delete(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
         if it.get('core'):                           # the game does not let these be dismantled either
             plan.messages.append(msg('block', 'inv_delete_core', **_lab_item(bx, info, cell)))
             return False
+        if bx.c['kind'] == 'shiptech' and _ship_kind(bx.c) is None:   # corvette tech comes from its parts
+            plan.messages.append(msg('block', 'inv_delete_corvette', **_lab_item(bx, info, cell)))
+            return False
         bx.take(j)
         ie.totals_delta = {(info['_id'], info['_t']): -info['_amount']}
         plan.messages.append(msg('warn', 'inv_uninstall_what', **_lab_item(bx, info, cell)))
@@ -863,6 +870,30 @@ def _delete(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
     bx.take(j)
     ie.totals_delta = {(info['_id'], info['_t']): -info['_amount']}
     plan.messages.append(msg('warn', 'inv_delete_what', n=info['_amount'], **_lab_item(bx, info, cell)))
+    return True
+
+
+def _repair(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
+    """One damaged technology back to working order, as the game's repair leaves it
+    (DamageFactor 0, fully installed); nothing else of the item changes."""
+    got = _item(ie, plan, params, tech=True)
+    if not got:
+        return False
+    bx, j, info, cell = got
+    k, p = ie.k, bx.items[j][1]
+    dmg = p.get(k.s('DamageFactor'), 0) > 0
+    part = not p.get(k.s('FullyInstalled'), True)
+    if info['_t'] != 'Technology' or not (dmg or part):
+        plan.messages.append(msg('block', 'inv_repair_none', **_lab_item(bx, info, cell)))
+        return False
+    if dmg:
+        bx.items[j][0] = _set(bx.items[j][0], k('DamageFactor'), b'0.0')
+        p[k.s('DamageFactor')] = 0.0
+    if part:
+        bx.items[j][0] = _set(bx.items[j][0], k('FullyInstalled'), b'true')
+        p[k.s('FullyInstalled')] = True
+    bx.touched = True
+    plan.messages.append(msg('info', 'inv_repair_what', **_lab_item(bx, info, cell)))
     return True
 
 
@@ -1057,7 +1088,8 @@ def _add(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
 
 
 ACTIONS = {'move': _move, 'sort': _sort, 'gather': _gather, 'rename': _rename, 'move_many': _move_many,
-           'split': _split, 'fill': _fill, 'dup': _dup, 'delete': _delete, 'add': _add}
+           'split': _split, 'fill': _fill, 'dup': _dup, 'delete': _delete, 'add': _add,
+           'repair': _repair}
 
 
 def plan_inventory(folder: SaveFolder, slot: int, action: str, params: dict | None = None,
@@ -1072,12 +1104,26 @@ def plan_inventory(folder: SaveFolder, slot: int, action: str, params: dict | No
     ids = [str(params.get(x)) for x in ('src', 'dst', 'inv') if params.get(x) is not None]
     if action == 'gather' and ids and ids[0] in byid:
         ids += gather_sources(byid, ids[0], str(params.get('from') or 'storage'))
-    # both files of the slot must hold the same inventories (the edit is described by cells)
+    # the edit is described by cells, so it goes to every file that holds the same inventories; when the
+    # autosave (odd file) differs from the manual save (even file: ship exit, save point, beacon), only the
+    # manual save is edited and the autosave is left as it was
+    def same(a, b):
+        norm = lambda v: sorted(json.dumps(x, sort_keys=True) for x in v) if isinstance(v, list) else v
+        return isinstance(a, dict) and isinstance(b, dict) and a.keys() == b.keys() and \
+            all(norm(a[x]) == norm(b[x]) for x in a)
     for f in files[1:]:
         other = {c['id']: c['inv'] for c in containers(f, tech=True)}
-        if any((byid.get(i) or {}).get('inv') != other.get(i) for i in ids):
-            plan.messages.append(msg('block', 'inv_files_differ', file=file_names(f.file_index)[0]))
-            return plan
+        if not all(same((byid.get(i) or {}).get('inv'), other.get(i)) for i in ids):
+            manual = [x for x in files if x.file_index % 2 == 0]
+            auto = [x for x in files if x.file_index % 2 == 1]
+            if not manual or not auto:
+                plan.messages.append(msg('block', 'inv_files_differ', file=file_names(f.file_index)[0]))
+                return plan
+            files = manual
+            byid = {c['id']: c for c in containers(files[0], tech=True)}
+            plan.messages.append(msg('warn', 'inv_manual_only', file=file_names(manual[0].file_index)[0],
+                                     auto=file_names(auto[0].file_index)[0]))
+            break
     for i in ids:
         if (byid.get(i) or {}).get('blocked'):
             plan.messages.append(msg('block', byid[i]['blocked']))
@@ -1098,7 +1144,7 @@ def plan_inventory(folder: SaveFolder, slot: int, action: str, params: dict | No
     elif action == 'move_many':
         plan.summary = msg('info', 'chg_inv_move_many', src=_label(byid[ids[0]]), dst=_label(byid[ids[1]]),
                            n=len(params.get('cells') or []))
-    elif action in ('split', 'fill', 'dup', 'delete', 'add'):
+    elif action in ('split', 'fill', 'dup', 'delete', 'add', 'repair'):
         last = next(m for m in reversed(plan.messages) if m['code'].startswith('inv_') and m['code'].endswith('_what'))
         code = 'chg_inv_uninstall' if last['code'] == 'inv_uninstall_what' else 'chg_inv_' + action
         plan.summary = msg('info', code, inv=_label(byid[ids[0]]), item=last['p']['item'], n=last['p'].get('n', 0))

@@ -80,7 +80,7 @@ class Session:
                 self.parsed.pop(c.target_index, None)
             if c.name:
                 self.names[c.target_index] = c.name
-        self.changes.append({'action': plan.action, 'summary': plan.summary, 'time': time.time()})
+        self.changes.append({'action': plan.action, 'summary': plan.summary, 'time': time.time(), 'meta': plan.meta})
         self._views = None
         return {'staged': True, 'pending': len(self.changes)}
 
@@ -111,5 +111,12 @@ class Session:
                                                   'backup': report.get('backup')})
         except (OSError, ValueError):
             pass                               # the history is a convenience; the save itself succeeded
+        try:
+            from . import seedlog
+            for c in self.changes:
+                if (c.get('meta') or {}).get('seed'):
+                    seedlog.record(self.folder.path.name, self.slot, c['meta']['seed'])
+        except (OSError, ValueError):
+            pass
         self.reload()
         return report

@@ -121,12 +121,85 @@ def names(lang: str = 'es') -> dict[str, str]:
     return out
 
 
+_INPUT_TOKEN = re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*\b')
+
+
+def _clean_desc(text: str) -> str:
+    """Game description without the sentences that name input buttons (CYCLEWEAPON, FE_ALT1...): the game
+    replaces those with button icons, which a tooltip cannot show."""
+    paras = []
+    for para in (text or '').split('\n\n'):
+        keep = [x for x in re.split(r'(?<=[.!?])\s+', para.strip())
+                if x and not any(len(t) >= 4 for t in _INPUT_TOKEN.findall(x))]
+        if keep:
+            paras.append(' '.join(keep))
+    return '\n\n'.join(paras)
+
+
+def tips(lang: str = 'es') -> dict:
+    """Tooltip data for starship technology, as the game describes it: subtitle, class, description and,
+    for procedural upgrades, each stat with the range the game rolls in (the exact roll depends on the seed)."""
+    d = load()
+    if not d:
+        return {}
+    texts = d['texts'].get(lang if lang in LANGS else 'en', {})
+    out = {}
+    for iid, it in d['items'].items():
+        if it.get('k') not in ('tech', 'proc'):
+            continue
+        stats = [it.get('stat') or ''] + [r[0] or '' for r in it.get('ranges') or []]
+        if not any(x.startswith('Ship_') for x in stats):
+            continue
+        tip = {}
+        if it.get('k') == 'tech' and texts.get(it.get('sub') or ''):
+            tip['s'] = texts[it['sub']]
+        if it.get('cls'):
+            tip['c'] = it['cls']
+        desc = _clean_desc(texts.get(it.get('desc') or '', ''))
+        if desc:
+            tip['d'] = desc
+        if it.get('ranges'):
+            tip['r'] = [r for r in it['ranges'] if r[0]]
+        if tip:
+            out[iid] = tip
+    return out
+
+
 def chargeable(item_id: str) -> bool | None:
     """True/False from the game data; None when the item isn't in the data (unknown)."""
     it = item(item_id)
     if not it or it.get('k') not in ('tech', 'proc'):
         return None
     return bool(it.get('charge'))
+
+
+_ADJ = None
+
+
+def adj_group(item_id: str) -> str | None:
+    """Adjacency family of a technology: the base stat it improves. A technology and its upgrade modules share
+    it (photon cannon + photon cannon upgrades), which is what the game links with a coloured frame when they
+    touch. Procedural upgrades carry the base technology's name; None when unknown or not a technology."""
+    global _ADJ
+    d = load()
+    it = item(item_id)
+    if not d or not it or it.get('k') not in ('tech', 'proc'):
+        return None
+    if _ADJ is None:
+        _ADJ = {v['name']: v['stat'] for v in d['items'].values()
+                if v.get('k') == 'tech' and v.get('stat') and v.get('name') and not v.get('upgrade')}
+    if it.get('k') == 'tech':
+        # warp drive access modules (cadmium/emeril/indium) share the hyperdrive stat but do not link in the
+        # game (checked by the user, 18/nov)
+        if str(it.get('name') or '').startswith('HYP_ACCESS'):
+            return None
+        return it.get('stat') or None
+    g = _ADJ.get(it.get('name'))
+    if g:
+        return g
+    first = (it.get('stats') or [''])[0]
+    cands = [b for b in set(_ADJ.values()) if first.startswith(b)]
+    return max(cands, key=len) if cands else None
 
 
 # ------------------------------------------------------------------------- game install ---------
@@ -212,6 +285,36 @@ def _zip():
     try:
         return zipfile.ZipFile(ICONS)
     except (OSError, zipfile.BadZipFile):
+        return None
+
+
+UI_ICONS = {      # game's own UI icons used by the Summary view (read from icons.zip, never shipped loose)
+    'units': 'frontend~icons~substances~currency.units.webp',
+    'nanites': 'frontend~icons~substances~currency.nanites.webp',
+    'quicksilver': 'frontend~icons~substances~currency.quicksilver.webp',
+    'gek': 'frontend~missions~missionfaction.gek.webp',
+    'korvax': 'frontend~missions~missionfaction.korvax.webp',
+    'vykeen': 'frontend~missions~missionfaction.vykeen.webp',
+    'builder': 'frontend~missions~missionfaction.builder.webp',
+    'tradeguild': 'frontend~icons~rank~factions.tradeguild.on.webp',
+    'explorerguild': 'frontend~icons~rank~factions.explorerguild.on.webp',
+    'warriorguild': 'frontend~icons~rank~factions.warriorguild.on.webp',
+    'pirate': 'frontend~icons~rank~factions.pirate.on.webp',
+    'freighter': 'frontend~icons~technology~render.freighterhd.webp',
+    'exocraft': 'frontend~icons~u4products~proctech~roguetech.exocraft.webp',
+    'weapon': 'frontend~icons~technology~render.laser1.webp',
+    'home': 'frontend~icons~buildable~buildable.basecoreflag.webp',     # base computer: the game's "home"
+}
+
+
+def ui_icon(name: str) -> bytes | None:
+    z = _zip()
+    key = UI_ICONS.get(name)
+    if not z or not key:
+        return None
+    try:
+        return z.read(key)
+    except KeyError:
         return None
 
 

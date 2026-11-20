@@ -182,6 +182,13 @@ def settlement(perks_xml: Path, globals_xml: Path) -> dict:
             'texts': SETTLE_TEXTS, 'vehicles': VEHICLE_TEXTS}
 
 
+def num(v):
+    try:
+        return round(float(v), 4)
+    except (TypeError, ValueError):
+        return None
+
+
 def table_entries(xml_path: Path):
     root = ET.parse(xml_path).getroot()
     table = next(c for c in root if c.get('name') in ('Table', 'Objects'))
@@ -202,12 +209,23 @@ def stat_bonuses(el):
     return out
 
 
-def build(pcbanks: Path, mbinc: str, out_json: Path):
+def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None):
+    """timings, when given, receives the seconds spent in each step (extract, convert, parse)."""
+    clock = [time.perf_counter()]
+
+    def lap(name):
+        now = time.perf_counter()
+        if timings is not None:
+            timings[name] = now - clock[0]
+        clock[0] = now
+
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         files = extract(pcbanks, td)
+        lap('extract')
         mbins = [str(p) for p in files.values()]
         r = subprocess.run([mbinc, 'convert', '-y', '-q', *mbins], capture_output=True, text=True)
+        lap('convert')
         if r.returncode != 0:
             raise SystemExit(f'MBINCompiler failed: {r.stderr[-500:]}')
         mx = {k: Path(str(v)[:-5] + '.MXML') for k, v in files.items()}
@@ -225,7 +243,8 @@ def build(pcbanks: Path, mbinc: str, out_json: Path):
                           'cat': nested(e, 'Category', 'TechnologyCategory'),
                           'charge': val(e, 'Chargeable') == 'true', 'charge_amount': int(val(e, 'ChargeAmount', 0) or 0),
                           'upgrade': val(e, 'Upgrade') == 'true', 'core': val(e, 'Core') == 'true',
-                          'stat': nested(e, 'BaseStat', 'StatsType'), 'bonus': stat_bonuses(e), 'icon': icon(e)}
+                          'stat': nested(e, 'BaseStat', 'StatsType'), 'bonus': stat_bonuses(e), 'icon': icon(e),
+                          'sub': val(e, 'Subtitle') or None, 'desc': val(e, 'Description') or None}
         for e in table_entries(mx[TABLES['procedural']]):
             iid = val(e, 'ID')
             if not iid:
@@ -234,7 +253,11 @@ def build(pcbanks: Path, mbinc: str, out_json: Path):
                           'template': val(e, 'Template') or '',
                           'cat': nested(e, 'Category', 'ProceduralTechnologyCategory'),
                           'cls': QUALITY.get(val(e, 'Quality'), ''), 'charge': False, 'upgrade': True,
-                          'icon': icon(e), 'stats': [nested(x, 'Stat', 'StatsType') for x in (props(e).get('StatLevels') if props(e).get('StatLevels') is not None else [])]}
+                          'icon': icon(e), 'stats': [nested(x, 'Stat', 'StatsType') for x in (props(e).get('StatLevels') if props(e).get('StatLevels') is not None else [])],
+                          'desc': val(e, 'Description') or None,
+                          # tooltip: each stat with the range the game rolls in (the exact roll comes from the seed)
+                          'ranges': [[nested(x, 'Stat', 'StatsType'), num(val(x, 'ValueMin')), num(val(x, 'ValueMax'))]
+                                     for x in (props(e).get('StatLevels') if props(e).get('StatLevels') is not None else [])]}
         for e in [e for t in ('product', 'baseparts', 'modular') for e in table_entries(mx[TABLES[t]])]:
             iid = val(e, 'ID')
             if iid:
@@ -259,7 +282,7 @@ def build(pcbanks: Path, mbinc: str, out_json: Path):
         st_keys = {p[f] for p in st['perks'].values() for f in ('n', 'd') if p.get(f)}
         st_keys |= {k for f in ('title', 'sub', 'text', 'objective') for k in st['judgement'][f] if k}
         st_keys |= {k for k in st['buildings'].values() if k} | {k for k in SETTLE_TEXTS + VEHICLE_TEXTS if k}
-        needed = {it[f] for it in items.values() for f in ('name', 'sub') if it.get(f)}
+        needed = {it[f] for it in items.values() for f in ('name', 'sub', 'desc') if it.get(f)}
         needed |= st_keys
         needed |= {m[f] for m in mis.values() for f in ('t', 's') if m.get(f)}
         needed |= {k for m in mis.values() for c in m['_c'] for k in c}
@@ -288,7 +311,7 @@ def build(pcbanks: Path, mbinc: str, out_json: Path):
                 last = key
         m['h'] = hints
     used = {m[f] for m in mis.values() for f in ('t', 's') if m.get(f)} | {k for m in mis.values() for _i, k in m['h']}
-    item_keys = {it[f] for it in items.values() for f in ('name', 'sub') if it.get(f)}
+    item_keys = {it[f] for it in items.values() for f in ('name', 'sub', 'desc') if it.get(f)}
     texts = {lang: {k: v for k, v in tx.items() if k in used or k in item_keys or k in st_keys} for lang, tx in texts.items()}
 
     sig = pcbanks / 'BankSignatures.bin'
@@ -300,6 +323,7 @@ def build(pcbanks: Path, mbinc: str, out_json: Path):
            'stack_sizes': stacks,
            'items': items, 'missions': mis, 'settlement': st, 'texts': texts}
     out_json.write_text(json.dumps(out, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+    lap('parse')
     return out
 
 

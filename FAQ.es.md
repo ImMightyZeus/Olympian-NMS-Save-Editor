@@ -15,8 +15,25 @@ El juego tiene la partida en memoria y la sobrescribe al volver a guardar, así 
 ### Uso Steam Cloud. ¿Algo especial?
 Después de guardar con Olympian, abre el juego primero en **este** PC para que Steam suba la versión nueva. Si juegas primero en otro PC, Steam puede traer la partida vieja.
 
+Si Steam muestra un **conflicto de sincronización** después de editar en este PC, **elige siempre la copia local** (la de este PC): la de la nube es la de antes de editar y la reemplazaría. Esto vale cuando lo último que hiciste fue editar aquí; si después jugaste en otro PC, la más nueva es la de la nube. Con el cross-save de Hello Games pasa algo parecido: abre el juego primero en el PC donde editaste. En cualquier caso, Olympian guardó un respaldo antes del cambio.
+
 ### ¿Dónde están mis respaldos?
-En tu carpeta de partidas: `_OlympianBackups` (automáticos, uno antes de cada guardado, más `history.json`) y `_OlympianRestorePoints` (los que creas tú). Olympian nunca los borra; puedes quitar los viejos tú mismo.
+En tu carpeta de partidas: `_OlympianBackups` (automáticos, uno antes de cada guardado, más `history.json`) y `_OlympianRestorePoints` (los que creas tú). Inicio y Resumen muestran cuánto ocupan. Olympian no los borra por su cuenta: el botón **Purgar respaldos** borra los automáticos antiguos solo cuando tú lo pides y conserva siempre los 10 más recientes y todos los que creaste tú.
+
+En Ajustes puedes elegir una **carpeta extra** (otro disco, un USB, OneDrive…): cada respaldo se copia también ahí, así sobrevive aunque se borre la carpeta de partidas.
+
+### ¿Qué protege la protección con PIN y código (2FA)?
+Es opcional (Ajustes). Al abrir Olympian pide tu PIN y el código de 6 dígitos de una app de autenticación (Google Authenticator, Microsoft Authenticator, Authy…), y vuelve a pedir el código para eliminar partidas o naves, copiar o restaurar sobre un slot ocupado y purgar respaldos. Funciona sin internet y sin cuenta: la app y Olympian comparten un secreto una sola vez con un código QR. El PIN se guarda solo como verificador y el secreto va cifrado con tu PIN.
+
+Sin protección, eliminar partidas y copiar una encima de otra quedan deshabilitadas, salvo que marques **«Vivo solo»** en Ajustes (para quien no comparte el PC). Siempre se guarda un respaldo completo antes.
+
+Su límite, dicho claro: frena a quien intente usar Olympian en tu PC, pero no impide que alguien borre o cambie las partidas desde el Explorador de archivos o con otro editor. Bloquea Windows (Win+L) cuando te alejes y usa la carpeta extra de respaldos.
+
+### Olvidé el PIN o perdí el teléfono.
+Usa uno de tus **códigos de recuperación** (los que te dio Olympian al activar la protección) en la pantalla de bloqueo. Cada uno sirve una vez; después configura la protección de nuevo o desactívala en Ajustes. Si tampoco tienes los códigos, cierra Olympian y borra `%APPDATA%\OlympianNMS\lock.json`: la protección se desactiva (tus partidas y respaldos no se tocan).
+
+### ¿Cómo actualizo Olympian sin perder nada?
+Descomprime la versión nueva en su propia carpeta (el nombre lleva la versión), ábrela y, cuando funcione, borra la vieja. Ajustes, protección, lotes aprendidos y respaldos están fuera de la carpeta de la app. La primera vez la versión nueva prepara su entorno (1 a 3 minutos).
 
 ### Usé una versión anterior y tenía las carpetas `_ZeusRespaldos` / `_ZeusPuntos`.
 Se mueven solas a los nombres nuevos la primera vez que abres esa carpeta de partidas. No se pierde nada; si una carpeta está en uso, se vuelve a intentar la próxima vez.

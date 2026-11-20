@@ -44,6 +44,7 @@
     <header class="topbar">
       <div><span class="muted" data-i18n="editor.editing"></span> <b id="editing-name"></b></div>
       <div class="row">
+        <button class="btn ibtn home" id="btn-home"><img src="/uiicon/home" alt="" draggable="false" onerror="this.replaceWith('⌂')"></button>
         <button class="btn" id="btn-discard" data-i18n="editor.discard"></button>
         <button class="btn primary" id="btn-save"></button>
         <select id="slot-switch" class="switch" title=""></select>
@@ -62,6 +63,7 @@
   </div>
 </div>
 <div id="busy" class="busy" hidden><span class="spinner"></span><span data-i18n="common.working"></span></div>
+<script src="vendor/qrcode.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

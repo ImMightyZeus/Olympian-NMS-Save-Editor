@@ -1,5 +1,96 @@
 # Changelog
 
+## Unreleased
+- `tools/gamedata_check.bat`: checks the game data tools (.NET, MBINCompiler, HGPAKtool, Pillow) against their latest
+  releases, optionally downloads what is missing (MBINCompiler verified by SHA-256), and times a full rebuild of the
+  game data and icons in a temporary folder. Nothing in the game or in `olympian/data` is changed.
+- `tools/build_gamedata.py` reports the time of each step.
+
+## 0.9.0 — 2026-11-20 — protection, backups, ships overhaul, richer summary, settlement lots
+
+### Safety
+- **Protection (optional):** PIN + time-based code (TOTP, RFC 6238) from any authenticator app, asked when the app
+  opens and again before destructive actions (delete a save or a ship, copy or restore over an occupied slot, move
+  a ship to another save, purge backups). Offline; the PIN is kept only as a PBKDF2 verifier, the secret is
+  encrypted with a key derived from the PIN; eight one-time recovery codes; 30-second pause after five wrong
+  attempts. Offered the first time the app opens, saying which features stay disabled without it; Settings can
+  turn it on or off at any time.
+- **"I live alone"** (Settings, with confirmation): deleting a save and copying over an occupied slot work without
+  PIN or code. Without protection or this option, both stay disabled. The backup first, the preview and the
+  closed-game check always apply.
+- **Manual save first:** every slot has an autosave and a manual save (written when leaving the ship or at a save
+  point). The views show the manual save and every edit goes to it; the autosave is edited too only when it holds
+  the same data, otherwise it is left as it was and the preview says so. Cell order no longer counts as a
+  difference. Applies to Inventories, Ships and Settlements.
+
+### Start and backups
+- **Delete a save** (both files of the slot; a full backup first; `accountdata.hg` never touched).
+- Disk space used by backups and **purge**, which always keeps the newest 10 automatic backups and never touches
+  restore points made by hand.
+- Optional **extra backup folder** outside the save folder; every backup and restore point is also copied there,
+  and Start lists the copies that only exist there (they can be restored too).
+- **Top bar:** a button with the game's base computer icon goes back to Start, asking about pending changes first.
+
+### Summary
+- The save card lists its details with icons (the game's own where it has them): location, state, ships, play
+  time, race chosen at the Appearance Modifier, units, nanites, quicksilver and reputation (races, guilds,
+  outlaws, Autophage).
+- A "Ships and gear" row: primary ship, freighter, primary exocraft, corvettes and the multi-tool in hand; ships,
+  freighter and exocraft open their view.
+
+### Ships
+- **One header** for the open ship: emblem, name, type and class, a pencil to rename and the actions as icons with
+  tooltips (repair, enable cells, recharge, expand), greyed out when they do not apply.
+- **Repair** one module (right-click, also in exosuit, freighter and multi-tool grids) or all of them, setting what
+  the game's own repair sets (no damage, fully installed) and nothing else. **Damaged cells** of salvaged or
+  crashed ships are repaired as in the game: the damaged component goes away and the cell is left free. Damaged
+  technology is marked with a red frame and "!"; damaged cells are no longer drawn as supercharged.
+- **Enable closed cells** is a separate action. **Expand** grows cargo to the class maximum, and technology to 60
+  cells when the ship already has its 4 supercharged cells (they stay where the game put them).
+- **Charge** of each technology in its cell (percentage and bar); partly charged ones are marked and named, and the
+  recharge preview lists every cell it fills.
+- **Adjacency:** technologies of the same family that touch are framed in one colour, as in the game; two
+  different groups that touch never share a colour. On a supercharged cell both the frame and the gold ring show.
+  Warp drive modules (cadmium, emerald, indium) are not linked to the hyperdrive, as in the game.
+- **Technology tooltips:** subtitle, class, the game's description and, for upgrades, the stats they can improve
+  with the game's range (the exact value of each module is not stored in the save).
+- **Copy or move a ship to other saves** (pick the destination, then Copy or Move), with everything in its
+  inventories, into the first free ship slot of each destination; byte for byte and verified, with a backup first.
+  Corvettes and ships with a custom look kept apart are not copied; the primary ship cannot be moved.
+- **Seed:** copy the seed of another ship of the same model; **seed history** per ship (original first, in
+  `%APPDATA%\OlympianNMS\seeds.json`): one click goes back to any of them, ◀ ▶ rotate between them.
+- Corvette technology cannot be uninstalled (it comes from its parts). Right-click on ship cells works like in
+  Inventories.
+
+### Inventories
+- "Move here all the…" also into the freighter and exocraft.
+
+### Layout
+- Ship and inventory grids are proportional: cells grow and shrink with the window. The technology text sits under
+  its grid and the cargo grid carries its own cell count; settlement lots fill their column.
+
+### Settlements
+- A grid of the 48 lots: buildings with their class, a gold cog on upgrades in progress, a green check on upgrades
+  whose timer ran out and wait to be completed in the game, new buildings under construction with their start
+  time, "not activated yet" for lots the game has not granted. States deduced from real saves.
+- The type of each lot is learned when the game names it in its next upgrade, also reading the older copies in
+  backups and restore points once (kept in `%APPDATA%\OlympianNMS\lots.json`). Read only.
+
+### Missions
+- Missions that share a title are grouped; the stage the save keeps is shown as "saved stage N", since a finished
+  mission can stay at any stage. Settlement routes count as finished only with the game's mark.
+
+### Languages and game data
+- The game's sentences (advisor, judgements, objectives) follow the interface language; names of items,
+  buildings, perks and missions keep following the game-terms language.
+- Game data regenerated with technology subtitles, descriptions and upgrade ranges.
+
+### Package and docs
+- Credits, AI disclosure and "What Olympian NMS Save Editor does and doesn't do" follow the MightyZeus standard 1.3
+  (README in English and Spanish, Settings → About, source header).
+- The zip's folder carries the version in its name. README: what's new, what Olympian does and does not do, how
+  to update; FAQ: sync conflicts, protection, recovery, updating.
+
 ## 0.8.0 — first public release
 - The program is now `olympian` everywhere (it started as "Zeus"). Folders and files use English names:
   `_OlympianBackups`, `_OlympianRestorePoints`, `history.json`, `%APPDATA%\OlympianNMS`. Folders and settings of
