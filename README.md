@@ -166,3 +166,10 @@ The underlying commitment doesn't change: building real solutions and tools from
 Copyright © 2026 MightyZeus.
 
 Olympian is free software released under the [GNU General Public License v3.0](LICENSE) — the bundled key mapping from libNOM.map is GPL-3.0, so Olympian uses the same license. You may use, share and modify it under that license; redistributed or modified versions must keep this copyright notice and stay under the GPL-3.0.
+
+## Other MightyZeus projects for No Man's Sky
+
+- **Olympian NMS Save Editor**: safe, visual save editor (PC/Steam). https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor
+- **Olympian Planet Coords**: on-screen planet coordinates, plus destinations with a marker and a direction arrow. https://github.com/ImMightyZeus/Olympian-Planet-Coords
+
+All projects: https://github.com/ImMightyZeus

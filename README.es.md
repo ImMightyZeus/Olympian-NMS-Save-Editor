@@ -166,3 +166,10 @@ El compromiso de fondo no cambia: crear soluciones y herramientas reales desde l
 Copyright © 2026 MightyZeus.
 
 Olympian es software libre publicado con la [Licencia Pública General de GNU v3.0](LICENSE): el mapa de claves de libNOM.map que se incluye es GPL-3.0, así que Olympian usa la misma licencia. Puedes usarlo, compartirlo y modificarlo según esa licencia; las versiones redistribuidas o modificadas deben conservar este aviso de copyright y seguir bajo la GPL-3.0.
+
+## Otros proyectos de MightyZeus para No Man's Sky
+
+- **Olympian NMS Save Editor**: editor de partidas seguro y visual (PC/Steam). https://github.com/ImMightyZeus/Olympian-NMS-Save-Editor
+- **Olympian Planet Coords**: coordenadas del planeta en pantalla y destinos con marcador y flecha de dirección. https://github.com/ImMightyZeus/Olympian-Planet-Coords
+
+Todos los proyectos: https://github.com/ImMightyZeus

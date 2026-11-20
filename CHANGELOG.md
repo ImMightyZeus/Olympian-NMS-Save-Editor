@@ -87,7 +87,8 @@
 
 ### Package and docs
 - Credits, AI disclosure and "What Olympian NMS Save Editor does and doesn't do" follow the MightyZeus standard 1.3
-  (README in English and Spanish, Settings → About, source header).
+  (README in English and Spanish, Settings → About, source header). README lists the other MightyZeus projects for
+  No Man's Sky.
 - The zip's folder carries the version in its name. README: what's new, what Olympian does and does not do, how
   to update; FAQ: sync conflicts, protection, recovery, updating.
 
