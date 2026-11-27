@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import re
 import time
 from dataclasses import dataclass, field
@@ -33,12 +34,38 @@ def default_roots() -> list[Path]:
     env = os.environ.get('OLYMPIAN_SAVE_DIR') or os.environ.get('ZEUS_SAVE_DIR')
     if env:
         roots.append(Path(env))
+    for base in nms_dirs():
+        roots += sorted(p for p in base.iterdir() if p.is_dir() and (p.name.startswith('st_') or p.name == 'DefaultUser'))
+    return roots
+
+
+_PROTON = Path('steamapps') / 'compatdata' / '275850' / 'pfx' / 'drive_c' / 'users' / 'steamuser'
+
+
+def nms_dirs() -> list[Path]:
+    """The game's HelloGames/NMS folders on this computer: Windows (%APPDATA%), macOS (native game) and
+    Linux / Steam Deck (Steam's Proton prefix of the game, app 275850)."""
+    cands = []
     appdata = os.environ.get('APPDATA')
     if appdata:
-        base = Path(appdata) / 'HelloGames' / 'NMS'
-        if base.is_dir():
-            roots += sorted(p for p in base.iterdir() if p.is_dir() and (p.name.startswith('st_') or p.name == 'DefaultUser'))
-    return roots
+        cands.append(Path(appdata) / 'HelloGames' / 'NMS')
+    home = Path.home()
+    if sys.platform == 'darwin':
+        cands.append(home / 'Library' / 'Application Support' / 'HelloGames' / 'NMS')
+    elif sys.platform.startswith('linux'):
+        for steam in (home / '.steam' / 'steam', home / '.local' / 'share' / 'Steam',
+                      home / '.var' / 'app' / 'com.valvesoftware.Steam' / '.local' / 'share' / 'Steam'):
+            for sub in (('AppData', 'Roaming'), ('Application Data',)):
+                cands.append(steam / _PROTON / Path(*sub) / 'HelloGames' / 'NMS')
+    out = []
+    for c in cands:
+        try:
+            r = c.resolve()
+        except OSError:
+            continue
+        if c.is_dir() and r not in [x.resolve() for x in out]:
+            out.append(c)
+    return out
 
 
 @dataclass

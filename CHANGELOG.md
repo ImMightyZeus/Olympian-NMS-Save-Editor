@@ -1,10 +1,73 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-27 — exact values, auto-sort, imported saves, Russian, Linux/macOS
+
+### Values like the game
+- **Exact value of each procedural upgrade** in its tooltip (instead of the possible range), rounded and shown the
+  way the game does (supercharged, no adjacency): ships, exosuit, freighter, multi-tools and exocraft.
+- **Real ship values:** Damage Potential, Shield Strength, Hyperdrive Range and Manoeuvrability as on the game's
+  ship screen (base + modules + upgrades + adjacency + supercharged + class). Each value has a tooltip with what its
+  upgrades add. Corvettes show shield and hyperdrive (both match the game); their damage and manoeuvrability are
+  left out until they match too.
+- Stat names come from the game's own language tables (English, Spanish, Russian).
+
+### Ships
+- **Auto-sort technology** (⇅ beside "Supercharged cells"): choose one or two priorities for the supercharged cells
+  (damage, hyperdrive, shield, pulse engine); the rest is placed for adjacency. Table before → after, preview of the
+  moves. With "damage" it recommends the weapon that gains the most. Also for corvettes, of any class.
+- **Cargo "Sort by…"** (⇅ beside the cargo grid): whatever recharges the installed shield goes first (explained the
+  first time).
+- **Copy modules from another ship** now brings only technology the destination type accepts: sentinel and living
+  ship technology becomes its equivalent (Sentinel Cannon → Photon Cannon…) or stays out when the ship already has it
+  or there is none. The preview lists both.
+- **Fix technology:** a ship that already holds technology its type does not accept (for example after copying
+  modules from a sentinel with an earlier version) shows a warning and a button that corrects it the same way.
+- **Delete selected** (click items of the open ship to select them), with the preview as confirmation.
+- **Corvettes:** rename, repair, recharge, enable cells, **expand to the S maximum** (cargo 120, technology 60 once
+  its 4 supercharged cells are there, identical to what the game does), auto-sort, and **delete as the game does**
+  (the corvette, its inventory and its build base go; the editor index is left as the game leaves it).
+- The bonus table and the class-bonus box were removed from the ship card (the compact class bonus stays in the list).
+
+### Inventories
+- **"📥 Move here all"** (right-click an item): every stack with exactly that ID (procedural ones with their seed)
+  comes from all other inventories, within the game's stack limits.
+- **Expand all / Collapse all** beside the search box.
+- **Delete selected:** the selected items of one or several inventories in one change; core and corvette technology
+  stay. Items in technology grids can be selected too.
+- **Drag several items:** dragging one of several selected items moves them all to the other inventory.
+
+### Settlements
+- Class shown as a game-style shield (C green … S); the class a building will have while it is built.
+- **Green check when the upgrade or construction timer has finished** (start time + the game's building time);
+  the gear moves to the bottom-right corner at double size; half-built lots show as "under construction" or "next
+  stage ready".
+
+### Summary, Travel and look
+- Reputation as banners (rank and the three medals); **medals and milestones** from the game's journey tables
+  (read only); pending changes and history in their own full-width box; rename pencil in the header.
+- Travel: portal glyphs with the game's icons; **✔ on galaxies you have visited** (deduced from discoveries,
+  portals, teleporters and bases).
+- Game-style tooltips everywhere (mouse and keyboard) and a look closer to the game; "I live alone" is more visible.
+- **Undo / redo** per pending change (buttons and Ctrl+Z / Ctrl+Y).
+
+### Imported saves
+- Their own space for saves of other players (Steam folder or .zip, Xbox/Game Pass `wgs` folder), apart from
+  yours; open, view only or allow changes, export in Steam format with install instructions, and **write back to
+  Xbox / Game Pass** for its owner (backup of the `wgs` folder first, refused if the game saved that slot since).
+
+### Platforms and languages
+- **Russian** interface and game content; README and FAQ in Russian.
+- **Linux** (Steam/Proton, Flatpak, Steam Deck) and **macOS** save folders, settings and launchers
+  (`run_olympian_nmsse.sh`, `.command`). Not yet tested on a real machine with the game.
 - `tools/gamedata_check.bat`: checks the game data tools (.NET, MBINCompiler, HGPAKtool, Pillow) against their latest
   releases, optionally downloads what is missing (MBINCompiler verified by SHA-256), and times a full rebuild of the
   game data and icons in a temporary folder. Nothing in the game or in `olympian/data` is changed.
-- `tools/build_gamedata.py` reports the time of each step.
+- `tools/build_gamedata.py` reports the time of each step and also reads shield recharge items, journey/medal
+  tables, building times and the roll tables used for exact values.
+
+### Fixes
+- Techstats no longer needs `numpy` (the first preview failed on Windows).
+- "State when loaded" showed untranslated states (aboard the fleet, Nexus, vehicle).
 
 ## 0.9.0 — 2026-11-20 — protection, backups, ships overhaul, richer summary, settlement lots
 

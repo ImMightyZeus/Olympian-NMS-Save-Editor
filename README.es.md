@@ -5,21 +5,22 @@
 <p align="center">Un editor de partidas de <b>No Man's Sky</b> para Windows, visual y cuidadoso.<br>
 Cada cambio se muestra antes, se verifica byte por byte y solo se escribe después de un respaldo automático.</p>
 
-<p align="center"><a href="README.md">Read in English</a> · <a href="FAQ.es.md">Preguntas frecuentes</a> · <a href="CHANGELOG.md">Cambios (en inglés)</a></p>
+<p align="center"><a href="README.md">Read in English</a> · <a href="README.ru.md">Читать на русском</a> · <a href="FAQ.es.md">Preguntas frecuentes</a> · <a href="CHANGELOG.md">Cambios (en inglés)</a></p>
 
 ![Vista de asentamientos](docs/screenshots/07-settlements.png)
 
-## Novedades en 0.9.0
+## Novedades en 0.10.0
 
-- **Protección opcional con PIN + código 2FA** (Google/Microsoft Authenticator, Authy…): se pide al abrir Olympian y otra vez en las acciones destructivas. Funciona sin internet y sin cuenta. O la opción **"Vivo solo"** si no compartes la PC.
-- **Primero tu guardado manual:** Olympian muestra y edita la partida que guardaste tú (al bajar de la nave o en un punto de guardado); el autoguardado solo cambia si tiene los mismos datos.
-- **Inicio:** eliminar partidas (siempre con respaldo completo antes), espacio que ocupan los respaldos con **purga** que conserva los 10 más recientes, **copia opcional de cada respaldo fuera de la carpeta de partidas**, y un botón con el ícono de la computadora de base del juego para volver aquí desde cualquier lugar.
-- **Resumen con íconos:** raza, unidades, nanitos, plata de quásar, reputación, nave principal, carguero, exovehículos, corbetas y la multiherramienta en uso.
-- **Naves:** una sola cabecera con las acciones como íconos; reparar módulos dañados y **celdas dañadas de naves rescatadas** como lo hace el juego; carga visible en cada celda; **marcos de adyacencia** en la cuadrícula de tecnología; **tooltips con la descripción del propio juego** y los rangos de las mejoras; expandir la tecnología a 60 celdas cuando la nave ya tiene sus 4 supercargadas; **copiar o mover una nave a otras partidas**; **historial de seeds**.
-- **Asentamientos:** cuadrícula de los **48 lotes** con su clase, mejoras en curso (engranaje dorado), mejoras listas para completar (✔ verde) y edificios nuevos en construcción.
-- **Misiones** con el mismo título, agrupadas. Diseño proporcional: las cuadrículas crecen y se achican con la ventana.
+- **Valores como en el juego:** el tooltip de cada mejora procedural muestra su valor exacto, y cada nave muestra su **daño potencial, fuerza del escudo, alcance del hiperimpulsor y maniobrabilidad** como en la pantalla de la nave del juego.
+- **Auto-ordenar la tecnología** de naves y corbetas: eliges una o dos prioridades para las celdas supercargadas y el resto se acomoda por adyacencia.
+- **Naves:** "Ordenar por…" en la carga (primero lo que recarga el escudo); copiar módulos solo trae la tecnología que admite ese tipo de nave (la de centinela y la de nave viviente pasan a su equivalente), y **Corregir tecnología** arregla las naves que ya tienen tecnología no admitida; **borrar seleccionados**; las **corbetas** se pueden reparar, habilitar celdas, ampliar al máximo de clase S, auto-ordenar y **eliminar como en el juego**.
+- **Inventarios:** "📥 Mover aquí todos" con clic derecho; **expandir / contraer todo**; **borrar seleccionados** en varios inventarios a la vez; **arrastrar varios objetos seleccionados** juntos.
+- **Asentamientos:** escudos de clase como en el juego y **✔ verde cuando el temporizador ya terminó**.
+- **Partidas importadas** de otros jugadores (Steam o Xbox/Game Pass) en su propio espacio, editables y devueltas, **incluso escribiendo en Game Pass**.
+- **Resumen y Viaje:** reputación en banners, **medallas e hitos**, ✔ en las galaxias visitadas, tooltips con estilo de juego, **deshacer / rehacer**.
+- Interfaz y contenido del juego en **ruso**; soporte para **Linux** (Steam/Proton, Steam Deck) y **macOS**.
 
-Lista completa en el [CHANGELOG](CHANGELOG.md).
+Lista completa en el [CHANGELOG](CHANGELOG.md) (en inglés).
 
 ## Por qué Olympian
 
@@ -38,13 +39,13 @@ La mayoría de los editores te dejan cambiar cualquier cosa. Olympian se enfoca 
 | **Inicio** | Elegir partida, respaldar cualquier slot, copiar un slot a otro, restaurar cualquier respaldo en cualquier slot, eliminar partidas (con protección). Espacio que ocupan los respaldos y purga de los antiguos. |
 | **Resumen** | Datos de la partida, renombrarla, últimos 10 cambios con "volver a antes de este cambio". Economía, reputación, nave principal, carguero, exonave, corbetas y arma principal, con enlace a su ventana. |
 | **Viaje** | Las 256 galaxias; destino por glifos, coordenadas galácticas o manual; aparecer dentro de tu nave flotando en el espacio. |
-| **Naves** | Reordenar arrastrando, elegir la nave principal, renombrar, reparar módulos dañados (uno o todos), habilitar celdas, recargar, expandir la carga al máximo de su clase (y la tecnología a 60 cuando la nave ya tiene sus 4 celdas supercargadas), cambiar seed (o copiar el de otra nave del mismo modelo), copiar módulos de otra nave, duplicar, eliminar. Mapa de celdas supercargadas y marcos de bonificación por adyacencia. Corbetas y naves vivientes solo muestran las acciones seguras para ellas. |
-| **Inventarios** | Exotraje, carguero, 10 contenedores, almacén de corbeta, carga de exonaves y de naves en una pantalla. Arrastrar entre inventarios, juntar pilas, ordenar por nombre/rareza/valor, "mover aquí todos los…" por categoría, buscador con totales, dividir/llenar/duplicar/borrar pilas, agregar objetos en celdas vacías. Tecnología instalada del exotraje, carguero y multiherramientas: instalar, desinstalar, mover. |
+| **Naves** | Reordenar arrastrando, elegir la nave principal, renombrar, reparar módulos dañados (uno o todos), habilitar celdas, recargar, expandir la carga al máximo de su clase (y la tecnología a 60 cuando la nave ya tiene sus 4 celdas supercargadas), cambiar seed (o copiar el de otra nave del mismo modelo), copiar módulos de otra nave (solo la tecnología que admite ese tipo de nave), corregir tecnología no admitida, auto-ordenar la tecnología, ordenar la carga, borrar seleccionados, duplicar, eliminar. Valores reales como en la pantalla de la nave del juego, mapa de celdas supercargadas y marcos de bonificación por adyacencia. Corbetas (incluso eliminarlas, como en el juego) y naves vivientes solo muestran las acciones seguras para ellas. |
+| **Inventarios** | Exotraje, carguero, 10 contenedores, almacén de corbeta, carga de exonaves y de naves en una pantalla. Arrastrar entre inventarios, juntar pilas, ordenar por nombre/rareza/valor, "mover aquí todos los…" por categoría, buscador con totales, dividir/llenar/duplicar/borrar pilas, "mover aquí todos" de un objeto, seleccionar varios objetos para moverlos, arrastrarlos o borrarlos juntos, expandir/contraer todo, agregar objetos en celdas vacías. Tecnología instalada del exotraje, carguero y multiherramientas: instalar, desinstalar, mover. |
 | **Misiones** | Todas las misiones con su nombre del juego, grupo y estado. Reiniciar (opcionalmente el resto de su serie), borrar entradas atascadas o duplicadas, cambiar etapa (experimental). Cuadro lateral con "qué hacer ahora / después" tomado de los textos de objetivos del juego. Las misiones que comparten título aparecen agrupadas. |
-| **Asentamientos** | Solo los tuyos: estadísticas, perks con su efecto exacto, decisión pendiente, producción, construcción en curso y los 48 lotes con su clase y las mejoras en curso. Renombrar, quitar perks existentes, descartar la decisión pendiente. Asesor con datos del juego (deuda, estadísticas débiles y qué perks las causan…) y las rutas de misiones de asentamientos con tu avance. |
+| **Asentamientos** | Solo los tuyos: estadísticas, perks con su efecto exacto, decisión pendiente, producción, construcción en curso y los 48 lotes con su clase, las mejoras en curso y un ✔ cuando el temporizador ya terminó. Renombrar, quitar perks existentes, descartar la decisión pendiente. Asesor con datos del juego (deuda, estadísticas débiles y qué perks las causan…) y las rutas de misiones de asentamientos con tu avance. |
 | **Visor JSON** | Toda la partida en un árbol con nombres legibles, nombre del objeto junto a cada ID, buscador, notas de qué es cada campo y qué riesgo tiene editarlo, dependencias, exportar. **Modo experto** opcional para cambiar valores sueltos (mismo tipo, verificado como todo lo demás). |
 
-Idiomas: la interfaz en **español o inglés**, y los términos del juego por separado en inglés, español de Latinoamérica o español de España.
+Idiomas: la interfaz en **español, inglés o ruso**, y los términos del juego por separado en inglés, español de Latinoamérica, español de España o ruso.
 
 ## Capturas
 
@@ -61,7 +62,7 @@ Idiomas: la interfaz en **español o inglés**, y los términos del juego por se
 - Microsoft Edge (viene con Windows): Olympian se abre en una ventana tipo app de Edge.
 - Python 3.11+: si falta, se instala solo la primera vez (Python 3.13 oficial, solo para tu usuario, con `winget`).
 
-**No** se admiten partidas de consola (PlayStation, Xbox, Switch) ni el formato de Xbox / Game Pass para PC.
+Las partidas de **Xbox / Game Pass para PC** no se abren directamente: se importan en *Inicio → Partidas importadas* (carpeta `wgs` del juego), se editan ahí y se devuelven con *Exportar para su dueño → Xbox / Game Pass* (con respaldo de la carpeta `wgs` antes de escribir). **No** se admiten partidas de consola (PlayStation, Xbox, Switch).
 
 ## Lo que hace y lo que no hace Olympian NMS Save Editor
 
@@ -82,7 +83,9 @@ Todo mod o editor cambia el juego, y Olympian NMS Save Editor no es la excepció
 3. **Cierra el juego antes de guardar.** Olympian lo comprueba y no escribe si está abierto.
 4. **Steam Cloud:** después de guardar, abre el juego primero en *este* PC para que Steam suba la versión nueva.
 
-**Actualizar a una versión nueva:** cada zip trae su carpeta con la versión en el nombre (`OlympianNMSSaveEditor_v0.9.0`). Descomprímela como una carpeta nueva, ábrela con su `.bat` y, cuando veas que funciona, borra la carpeta vieja. Tus ajustes, la protección y los respaldos no viven en la carpeta de la app, así que no se pierden. Descomprimir encima de la versión anterior también funciona, pero puede dejar archivos viejos que ya no se usan.
+**Actualizar a una versión nueva:** cada zip trae su carpeta con la versión en el nombre (`OlympianNMSSaveEditor_v0.10.0`). Descomprímela como una carpeta nueva, ábrela con su `.bat` y, cuando veas que funciona, borra la carpeta vieja. Tus ajustes, la protección y los respaldos no viven en la carpeta de la app, así que no se pierden. Descomprimir encima de la versión anterior también funciona, pero puede dejar archivos viejos que ya no se usan.
+
+**Linux (Steam / Proton, Steam Deck) y macOS:** necesitas Python 3.11 o más nuevo. Abre una terminal en la carpeta de la app y escribe `sh run_olympian_nmsse.sh` (en macOS también sirve doble clic en `run_olympian_nmsse.command`). Busca tus partidas en la carpeta de Proton del juego (`.../steamapps/compatdata/275850/pfx/.../HelloGames/NMS`) o en `~/Library/Application Support/HelloGames/NMS`. La ventana se abre en Edge, Chrome, Chromium o Brave si están instalados; si no, en tu navegador. Tus ajustes viven en `~/.config/OlympianNMS` (Linux) o `~/Library/Application Support/OlympianNMS` (macOS). *Sin probar todavía en un equipo real con el juego: si algo falla, pásanos `olympian_log.txt`.*
 
 SmartScreen o tu antivirus pueden avisar porque el `.bat` no está firmado: *Más información → Ejecutar de todas formas*. Olympian solo abre un servidor local en `127.0.0.1` con una clave por sesión y no se conecta a internet.
 
@@ -119,7 +122,7 @@ python -m pytest tests        :: pruebas
 ```
 
 - `olympian/core/`: formato de la partida (`hgfile`, `savefile`, `meta`), edición fiel al byte (`jspan`, `pathedit`), cada sección del editor y la red de seguridad (`safety`, `session`, `ops`).
-- `olympian/web/`: la interfaz (HTML/CSS/JS sin compilación) y sus textos (`i18n/en.json`, `i18n/es.json`).
+- `olympian/web/`: la interfaz (HTML/CSS/JS sin compilación) y sus textos (`i18n/en.json`, `i18n/es.json`, `i18n/ru.json`).
 - La mayoría de las pruebas usan copias de partidas reales en `tests/fixture/`. Las partidas son personales, así que **no** están en este repositorio; pon copias de tu propia carpeta de partidas ahí para correr todas las pruebas (si no, las que las necesitan se saltan).
 
 Los reportes de errores son bienvenidos en [Issues](../../issues): adjunta `olympian_log.txt` y cuenta qué hiciste.

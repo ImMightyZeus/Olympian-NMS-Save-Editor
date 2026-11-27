@@ -276,6 +276,28 @@ def test_session_stage_save_discard(folder):
     assert p[k.s('PrimaryShip')] == 3 and f.meta.name == 'Sesion'
 
 
+def test_session_undo_redo_by_step(folder):
+    s = Session(folder, 1)
+    raw0 = dict(s.work)
+    prim0 = s.describe()['files'][0]['primary_ship']
+    s.stage(ops.plan_set_primary(folder, 1, 3, files=s.views()))
+    raw1 = dict(s.work)
+    s.stage(ops.plan_rename(folder, 1, 'Paso2', files=s.views()))
+    assert s.describe()['can_undo'] and not s.describe()['can_redo']
+    assert s.undo() and len(s.changes) == 1 and s.work == raw1 and not any(s.names.values())
+    assert s.undo() and not s.changes and s.work == raw0 and not s.dirty
+    assert s.describe()['files'][0]['primary_ship'] == prim0 and not s.undo()
+    assert s.redo() and s.describe()['files'][0]['primary_ship'] == 3
+    assert s.redo() and len(s.changes) == 2 and any(s.names.values()) and not s.redo()
+    s.undo()
+    s.stage(ops.plan_set_primary(folder, 1, 2, files=s.views()))      # a new change drops what was undone
+    assert not s.describe()['can_redo'] and len(s.changes) == 2
+    rep = s.save()
+    assert all(v['ok'] for v in rep['verified'])
+    f, p, k = _psd(folder, 1)
+    assert p[k.s('PrimaryShip')] == 2
+
+
 def test_session_save_guard(folder):
     import os, time
     s = Session(folder, 1)
@@ -309,8 +331,8 @@ def _stage_and_save(folder, ship, op, **params):
 
 
 def test_ship_actions_respect_protections(folder):
-    for ship, op in [(3, 'expand'), (3, 'delete'), (3, 'duplicate'), (3, 'seed'), (3, 'copy_tech'),
-                     (1, 'expand'), (1, 'copy_tech'), (10, 'repair'), (4, 'unlock'),
+    for ship, op in [(3, 'expand'), (3, 'duplicate'), (3, 'seed'), (3, 'copy_tech'),
+                     (1, 'expand'), (1, 'copy_tech'), (10, 'repair'),
                      (0, 'set_class'), (5, 'set_class'), (0, 'set_sc')]:          # class/SC editing removed
         plan = SH.plan_ship(folder, 1, ship, op, {'seed': '0x1', 'cls': 'S', 'from': 0})
         assert plan.blocked, (ship, op)
@@ -376,8 +398,24 @@ def test_ship_repair_and_unlock(folder):
     a = after2[7][k.s('Inventory')]
     assert len(a[k.s('ValidSlotIndices')]) == a[k.s('Width')] * a[k.s('Height')]
     assert after2[7][k.s('Inventory_TechOnly')][k.s('Slots')] == after[7][k.s('Inventory_TechOnly')][k.s('Slots')]
-    # corvettes: repair allowed, enabling cells is not
-    assert SH.plan_ship(folder, 1, 4, 'unlock').blocked
+    # corvettes: closed cells inside their grid open as on any ship (storage augmentations in the game)
+    ships0, _, _ = _ships(folder)
+    plan = SH.plan_ship(folder, 1, 4, 'unlock')
+    assert not plan.blocked
+    for g in ('Inventory', 'Inventory_TechOnly'):
+        inv = ships0[4][k.s(g)]
+        if len(inv[k.s('ValidSlotIndices')]) < inv[k.s('Width')] * inv[k.s('Height')]:
+            break
+    else:
+        assert any(m['code'] == 'ship_unlock_nothing' for m in plan.messages)
+        return
+    ops.apply(plan)
+    after3, _, _ = _ships(folder)
+    for g in ('Inventory', 'Inventory_TechOnly'):
+        a = after3[4][k.s(g)]
+        assert (a[k.s('Width')], a[k.s('Height')]) == (ships0[4][k.s(g)][k.s('Width')], ships0[4][k.s(g)][k.s('Height')])
+        assert len(a[k.s('ValidSlotIndices')]) == a[k.s('Width')] * a[k.s('Height')]
+        assert a[k.s('Slots')] == ships0[4][k.s(g)][k.s('Slots')]
 
 
 def test_inventory_repair_one_module(folder):
@@ -474,14 +512,35 @@ def test_ship_copy_tech(folder):
     after, _, _ = _ships(folder)
     items = after[9][g][k.s('Slots')]
     src = before[6][g][k.s('Slots')]
-    assert items[:len(src)] == src
+    ids = [x[k.s('Id')] for x in items[:len(src)]]
+    # standard core technology arrives as the sentinel's own (photon cannon -> sentinel cannon...), same cells
+    assert ids == [SH.tech_equivalent(x[k.s('Id')], 'robot') if not SH.tech_ok(x[k.s('Id')], 'robot') else x[k.s('Id')]
+                   for x in src]
+    assert [x[k.s('Index')] for x in items[:len(src)]] == [x[k.s('Index')] for x in src]
+    assert not SH.tech_plan([x[k.s('Id')] for x in items], 'robot')
+    assert SH.plan_ship(folder, 1, 9, 'fix_tech').blocked                          # nothing left to correct
     cells = [(x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in items]
     assert len(cells) == len(set(cells))
     fams = [SH.family(x[k.s('Id')]) for x in items]
-    src_fams = {SH.family(x[k.s('Id')]) for x in src}
+    src_fams = {SH.family(i) for i in ids}
     assert all(f in src_fams for f in fams[:len(src)]) and not any(f in src_fams for f in fams[len(src):])
 
 
+
+
+def test_tech_eligibility_like_the_game():
+    """User's exotic in slot 15 (27/nov): modules copied from a sentinel brought the sentinel core. It is taken out
+    where the exotic already has its own, swapped for its equivalent where not; neutral modules stay."""
+    if not GD.load():
+        pytest.skip('no game data')
+    ids = ['^HYPERDRIVE_ROBO', '^SHIPGUN_ROBO', '^LIFESUP_ROBO', '^SHIPJUMP_ROBO', '^UP_HYP4#02507',
+           '^SHIPMINIGUN', '^HDRIVEBOOST4', '^HYPERDRIVE', '^SHIPGUN1']
+    assert SH.tech_plan(ids, 'std') == [(0, None), (1, None), (2, None), (3, '^SHIPJUMP1')]
+    assert SH.tech_plan(ids, None) == []                                         # corvettes: left alone
+    assert SH.tech_equivalent('^UA_HYP3#123', 'std') == '^UP_HYP3#123'
+    assert SH.tech_equivalent('^UP_HYP3#123', 'alien') == '^UA_HYP3#123'
+    assert SH.tech_equivalent('^SHIPMINIGUN', 'alien') is None
+    assert SH.tech_ok('^SHIPMINIGUN', 'robot') and not SH.tech_ok('^SHIPMINIGUN', 'alien')
 
 
 def test_sc_layout_is_read_only_and_described(folder):
@@ -1596,7 +1655,8 @@ def test_totp_rfc6238_vectors_and_lock(tmp_path):
     secret = LK._unb32(r['key'].replace(' ', ''))
     rec = L.confirm(LK.totp(secret))
     raw = (tmp_path / 'lock.json').read_text()
-    assert '4821' not in raw and secret.hex() not in raw and r['key'].replace(' ', '') not in raw
+    # the PIN never stored as a value (random hex elsewhere in the file may contain the digits by chance)
+    assert '"4821"' not in raw and ': 4821' not in raw and secret.hex() not in raw and r['key'].replace(' ', '') not in raw
     L2 = LK.Lock(tmp_path / 'lock.json')
     with pytest.raises(ValueError):
         L2.unlock('0000', LK.totp(secret))
@@ -1842,3 +1902,439 @@ def test_ship_broken_cells_repaired_like_the_game(folder):
         assert after['Inventory_TechOnly']['super'] == n_sc
         assert c.json[k.s('BaseContext')][k.s('PlayerStateData')][k.s('ShipOwnership')][0] == \
             s[k.s('BaseContext')][k.s('PlayerStateData')][k.s('ShipOwnership')][0]
+
+
+# ---- real technology values (checked against what the game shows, 22/nov) ----
+
+def test_procedural_rolls_match_the_game():
+    from olympian.core import techstats as T
+    r = dict(T.roll('UP_LASER3#67673'))      # in game: Heat Dispersion +29 %, Overheat Downtime -14 %, Mining Speed +15 %
+    assert set(r) == {'Weapon_Laser_HeatTime', 'Weapon_Laser_ReloadTime', 'Weapon_Laser_Mining_Speed'}
+    assert abs(r['Weapon_Laser_HeatTime'] - 1.2847341) < 1e-6
+    assert abs(r['Weapon_Laser_ReloadTime'] - 0.8645059) < 1e-6
+    r = dict(T.roll('UP_SCAN4#99511'))       # in game: Flora +6,657 %, Mineral +6,741 %, Scan Radius +37 %
+    assert int(r['Weapon_Scan_Discovery_Flora'] * 100) == 6657 and int(r['Weapon_Scan_Discovery_Mineral'] * 100) == 6741
+    assert T.high_grade('UP_HYPX#14409') is True                       # in game: 293 ly
+    assert round(dict(T.roll('UP_HYPX#14409'))['Ship_Hyperdrive_JumpDistance']) == 293
+    assert T.high_grade('UP_HYP4#02507') is None
+    assert round(dict(T.roll('UP_HYP4#02507'))['Ship_Hyperdrive_JumpDistance']) == 250
+
+
+KILLER_DRONE = {(0, 0): 'SHIPSCAN_ECON', (2, 0): 'HYPERDRIVE_ROBO', (3, 0): 'UP_HYP4#14094', (4, 0): 'SHIPSHIELD_ROBO',
+                (5, 0): 'UP_S_SHL4#03140', (7, 0): 'UT_SHIPMINI', (8, 0): 'SHIPMINIGUN', (9, 0): 'UP_SMINIX#32732',
+                (0, 1): 'SHIPGUN_ROBO', (1, 1): 'UP_SGUN4#56230', (2, 1): 'UP_HYP4#10353', (3, 1): 'UP_HYPX#14409',
+                (4, 1): 'UP_S_SHL4#83251', (5, 1): 'UP_S_SHLX#43713', (6, 1): 'UT_SHIPSHIELD', (8, 1): 'UP_SMINI4#10896',
+                (9, 1): 'UP_SMINI3#31862', (0, 2): 'UP_SGUN2#07068', (1, 2): 'UT_SHIPGUN', (2, 2): 'UP_SGUN1#83768'}
+KILLER_SC = {(8, 0), (9, 0), (8, 1), (9, 1)}
+KILLER_CLASS = {'^SHIP_DAMAGE': 79.61051940917969, '^SHIP_SHIELD': 31.445865631103516,
+                '^SHIP_HYPERDRIVE': 9.44363021850586, '^SHIP_AGILE': 48.04023361206055}
+
+
+def test_ship_screen_values_match_the_game():
+    from olympian.core import techstats as T
+    g = T.Grid(KILLER_DRONE, KILLER_SC)
+    d = T.ship_display(g, KILLER_CLASS)
+    assert abs(d['hyperdrive'] - 1647.0) < 0.05          # in game: Hyperdrive Range 1647.0
+    assert abs(d['shield'] - 311.2) < 0.05               # in game: Shield Strength 311.2
+    # supercharged minigun upgrade, tooltip without adjacency: Fire Rate +42 %, Heat Dispersion +41 %, Damage +8 %
+    assert abs(g.piece((9, 0), 'Ship_Weapons_Guns_Rate', adjacency=False) - 1.4166236) < 1e-5
+    assert int(g.piece((9, 0), 'Ship_Weapons_Guns_Damage', adjacency=False) / 205 * 100) == 8
+
+
+def test_autosort_improves_priority_and_only_moves():
+    from olympian.core import techstats as T, autosort as AS
+    valid = {(x, y) for x in range(10) for y in range(6)}
+    g = T.Grid(KILLER_DRONE, KILLER_SC)
+    r = AS.plan(g, valid, ['hyperdrive'], KILLER_CLASS)
+    assert r['after']['hyperdrive'] > r['before']['hyperdrive'] + 100
+    assert sorted(r['cells'].values()) == sorted(KILLER_DRONE.values())          # nothing created or removed
+    srcs, dsts = [tuple(m[0]) for m in r['moves']], [tuple(m[1]) for m in r['moves']]
+    assert len(set(srcs)) == len(srcs) and len(set(dsts)) == len(dsts)
+
+
+def test_inventory_arrange_moves_tech_pieces(folder):
+    from olympian.core import inventories as INV
+    files = ops.load_slot(folder, 1)
+    k = files[0].keys
+    c = next((c for c in INV.containers(files[0], tech=True) if c['kind'] == 'shiptech'
+              and len(c['inv'][k.s('Slots')]) >= 2 and not c.get('blocked')), None)
+    if not c:
+        pytest.skip('no ship technology grid in the fixture')
+    slots = c['inv'][k.s('Slots')]
+    a, b = [(x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in slots[:2]]
+    ida, idb = slots[0][k.s('Id')], slots[1][k.s('Id')]
+    s = Session(folder, 1)
+    plan = INV.plan_inventory(folder, 1, 'arrange', {'inv': c['id'], 'moves': [[list(a), list(b)], [list(b), list(a)]]},
+                              files=s.views())
+    assert not plan.blocked, plan.messages
+    s.stage(plan)
+    rep = s.save()
+    assert all(v['ok'] for v in rep['verified'])
+    c2 = next(cc for cc in INV.containers(ops.load_slot(folder, 1)[0], tech=True) if cc['id'] == c['id'])
+    pos = {x[k.s('Id')]: (x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in c2['inv'][k.s('Slots')]}
+    assert pos[ida] == b and pos[idb] == a
+    # a target outside the grid or on a piece that stays is refused
+    plan = INV.plan_inventory(folder, 1, 'arrange', {'inv': c['id'], 'moves': [[list(a), [99, 99]]]},
+                              files=Session(folder, 1).views())
+    assert plan.blocked
+
+
+def test_tooltip_values_match_the_game():
+    from olympian.core import techstats as T
+    g = T.Grid({**KILLER_DRONE, (6, 2): 'UP_LASER3#67673', (7, 2): 'UP_SCAN4#99511'}, KILLER_SC)
+    tip = lambda xy: {s: v for s, _k, v in T.tooltip(g, xy)}
+    # values seen in the game's tooltips (supercharge included, adjacency not)
+    assert tip((9, 0)) == {'Ship_Weapons_Guns_Damage': '+8', 'Ship_Weapons_Guns_Rate': '+42', 'Ship_Weapons_Guns_HeatTime': '+41'}
+    assert tip((1, 1)) == {'Ship_Weapons_Guns_Rate': '+3', 'Ship_Weapons_Guns_HeatTime': '+3', 'Ship_Weapons_Guns_Damage': '+6'}
+    assert tip((3, 1)) == {'Ship_Hyperdrive_JumpDistance': '293'}            # 293 ly; the fixed jumps-per-cell is not listed
+    assert tip((6, 2)) == {'Weapon_Laser_HeatTime': '+29', 'Weapon_Laser_ReloadTime': '-14', 'Weapon_Laser_Mining_Speed': '+15'}
+    assert tip((7, 2))['Weapon_Scan_Discovery_Flora'] == '+6,657' and tip((7, 2))['Weapon_Scan_Radius'] == '+37'
+
+
+def test_lot_states_confirmed_in_game():
+    from olympian.core import settlements as S
+    assert S.lot_state(0x3FF0007F) == {'built': True, 'cls': 'S', 'up': None, 'ready': False}    # A->S completed
+    assert S.lot_state(0x1DF0007F)['up'] == 'S' and not S.lot_state(0x1DF0007F)['ready']        # A->S running
+    assert S.lot_state(0xC10007F) == {'built': True, 'cls': 'C', 'up': 'B', 'ready': True}
+    k = type('K', (), {'s': staticmethod(lambda x: x)})()
+    s = {'BuildingStates': [0x27, 0x37, 0x3F, 0x400007F, 0, 0x25, 0x35],
+         'LastBuildingUpgradesTimestamps': [1763255746, 0, 0, 0, 0, 0, 0]}
+    S.LOTS_PATH = None
+    L = S.lots(s, k, '')
+    assert L[0]['building'] and L[0]['stage_running'] and L[0]['since'] == 1763255746
+    assert L[1]['building'] and not L[1]['stage_running']                 # stage done, next one waits for the player
+    assert L[2]['building'] and not L[3]['building'] and L[3]['built'] and not L[4]['building']
+    assert not L[5]['building'] and not L[6]['building']                   # empty lots (seen in the user's saves)
+
+
+def test_translations_have_the_same_keys_and_placeholders():
+    import json, re
+    from pathlib import Path
+    d = Path(__file__).resolve().parent.parent / 'olympian' / 'web' / 'i18n'
+    langs = {p.stem: json.loads(p.read_text(encoding='utf-8')) for p in d.glob('*.json')}
+    assert {'es', 'en', 'ru'} <= set(langs)
+    ph = lambda s: sorted(re.findall(r'\{[a-z_0-9]+\}', s))
+    for name, t in langs.items():
+        assert set(t) == set(langs['en']), name
+        assert all(ph(t[k]) == ph(langs['en'][k]) for k in t), name
+
+
+def test_russian_game_texts():
+    from olympian.core import gamedata
+    assert 'ru' in gamedata.LANGS and gamedata.text('SHIPGUN1_NAME_L', 'ru') == 'Фотонная пушка'
+
+
+def test_stat_labels_and_other_tech_grids():
+    from olympian.core import gamedata, inventories
+    assert gamedata.stat_labels('en')['Ship_Weapons_Guns_HeatTime'] == 'Heat Dispersion'
+    assert gamedata.stat_labels('en')['Ship_PulseDrive_MiniJumpFuelSpending'] == 'Pulse Drive Fuel Efficiency'  # id cut at 31
+    assert set(gamedata.stat_labels('ru')) == set(gamedata.stat_labels('es')) == set(gamedata.stat_labels('en'))
+    # a multi-tool grid (values seen in the game on the user's Judgement DiamondSC)
+    items = [[0, 0, '^UP_LASER3#67673', 1, 1, 'Technology', None, None, False],
+             [1, 0, '^UP_SCAN4#99511', 1, 1, 'Technology', None, None, False]]
+    v = inventories._tech_values(items, set())
+    assert {s: t for s, _k, t in v['0,0']} == {'Weapon_Laser_HeatTime': '+29', 'Weapon_Laser_ReloadTime': '-14', 'Weapon_Laser_Mining_Speed': '+15'}
+    assert dict((s, t) for s, _k, t in v['1,0'])['Weapon_Scan_Discovery_Flora'] == '+6,657'
+
+
+def test_imported_space_steam(folder, tmp_path):
+    import zipfile
+    from olympian.core import imported as I
+    base = tmp_path / 'appdata'
+    base.mkdir()
+    z = tmp_path / 'friend.zip'                    # what a friend would send: a zip of their save folder
+    with zipfile.ZipFile(z, 'w') as zf:
+        for p in folder.path.iterdir():
+            if p.is_file():
+                zf.write(p, f'st_123/{p.name}')
+    sc = I.scan(str(z))
+    assert sc['kind'] == 'steam' and 1 in [s['slot'] for s in sc['slots']]
+    i = I.do_import(base, str(z), 1, 'Ana', readonly=True)
+    d = I.folder_of(base, i['id'])
+    src = {n: f.raw for n, f in enumerate(ops.load_slot(folder, 1), 1)}
+    got = {f.file_index: f.raw for f in ops.load_slot(SaveFolder(d), 1)}
+    assert sorted(got.values()) == sorted(src.values())            # same content, now as slot 1 of its own space
+    s = Session(SaveFolder(d), 1, imported=True, readonly=True)
+    with pytest.raises(PermissionError):
+        s.stage(ops.plan_rename(SaveFolder(d), 1, 'x', files=s.views()))
+    I.set_readonly(base, i['id'], False)
+    s = Session(SaveFolder(d), 1, imported=True)
+    s.stage(ops.plan_rename(SaveFolder(d), 1, 'Arreglada', files=s.views()))
+    assert all(v['ok'] for v in s.save()['verified'])
+    out = tmp_path / 'out'
+    out.mkdir()
+    with pytest.raises(PermissionError):
+        I.export_steam(base, i['id'], str(folder.path), 4, str(folder.path))
+    e = I.export_steam(base, i['id'], str(out), 4, str(folder.path), 'en')
+    ex = ops.load_slot(SaveFolder(Path(e['folder'])), 4)
+    assert {f.file_index for f in ex} == {7, 8} and all(f.meta.name == 'Arreglada' for f in ex)
+    assert (Path(e['folder']) / 'README.txt').is_file()
+    assert [x['id'] for x in I.listing(base)] == [i['id']]
+    I.remove(base, i['id'])
+    assert not I.listing(base)
+
+
+def test_xbox_meta_becomes_a_steam_manifest():
+    import struct
+    from olympian.core import imported as I
+    xm = bytearray(360)
+    struct.pack_into('<III', xm, 0, 4234, 1, 0x0AD2FE)
+    struct.pack_into('<I', xm, 0x10, 5572378)
+    xm[0x14:0x18] = b'Ana\0'
+    m = I.steam_meta_from_xbox(bytes(xm), 3)
+    assert len(m.raw) == 432 and m.size_decompressed == 5572378 and m.name == 'Ana'
+    assert bytes(m.raw[0x44:0x44 + 0x10]) == bytes(xm[:0x10])
+    from olympian.core.meta import Meta
+    assert Meta.load(m.encrypt_for(3), 3).name == 'Ana'
+
+
+def test_lot_timer_end():
+    # stage / upgrade end = start + SettlementBuildingTimes[type] (nano farm 5600 s, seen in game as 1:33:18 left)
+    assert ST._ends('Settlement_Farm', 1_000_000) == 1_005_600
+    assert ST._ends('Settlement_SheriffsOffice', 10) == 100
+    assert ST._ends('Settlement_Hub', 10) == 10 + 46800          # 0 in the table -> BuildingUpgradeTimeInSeconds
+    assert ST._ends(None, 10) is None and ST._ends('Settlement_Farm', 0) is None
+
+
+def test_bonus_totals():
+    from olympian.core import techstats as T
+    if not T.rules():
+        pytest.skip('no game data')
+    # hyperdrive alone: nothing added; with one fixed upgrade next to it: its jump distance plus adjacency
+    alone = T.bonus_totals(T.Grid({(0, 0): 'HYPERDRIVE'}))
+    assert alone == []
+    g = T.Grid({(0, 0): 'HYPERDRIVE', (1, 0): 'UP_HYP1#12345'})
+    fams = {f: rows for f, rows, _b in T.bonus_totals(g)}
+    assert 'Ship_Hyperdrive' in fams
+    row = dict((s, (k, v)) for s, k, v in fams['Ship_Hyperdrive'])
+    assert row['Ship_Hyperdrive_JumpDistance'][0] == 'ly'
+    up = g.piece((1, 0), 'Ship_Hyperdrive_JumpDistance')
+    base_gain = g.piece((0, 0), 'Ship_Hyperdrive_JumpDistance') - g.piece((0, 0), 'Ship_Hyperdrive_JumpDistance', False)
+    assert int(row['Ship_Hyperdrive_JumpDistance'][1].replace(',', '')) == round(float(up + base_gain))
+    assert [b for f, _r, b in T.bonus_totals(g)] == ['HYPERDRIVE']
+
+
+def _fake_wgs(root: Path, files):
+    """A Game Pass wgs folder with Slot1Auto / Slot1Manual made from Steam files (as the game lays it out)."""
+    import uuid
+    from olympian.core import xboxwrite as X
+    from olympian.core.imported import STEAM_HEADER, XBOX_META
+    root.mkdir(parents=True)
+    ix = X.Index(14, 'HelloGames.NoMansSky_bs190hzg1sesy!NoMansSky', X.filetime(), 3, str(uuid.uuid4()), 0x10000000)
+    for f, kind in zip(files, ('Auto', 'Manual')):
+        d = uuid.uuid4()
+        (root / d.hex.upper()).mkdir()
+        g = {k: uuid.uuid4().bytes_le for k in X.DATA_NAMES}
+        data = hgfile.compress(f.raw)
+        meta = bytes(f.meta.raw[STEAM_HEADER:STEAM_HEADER + XBOX_META])
+        (root / d.hex.upper() / X.blob_name(g['data'])).write_bytes(data)
+        (root / d.hex.upper() / X.blob_name(g['meta'])).write_bytes(meta)
+        (root / d.hex.upper() / 'container.1').write_bytes(X.write_container(g))
+        ix.entries.append(X.Entry(f'Slot1{kind}', '', '"0x8DF0000000000001"', 1, 1, d.bytes_le, X.filetime(), 0,
+                                  len(data) + len(meta)))
+    (root / 'containers.index').write_bytes(X.write_index(ix))
+
+
+def test_imported_xbox_write_back(folder, tmp_path):
+    from olympian.core import imported as I, xboxwrite as X
+    files = ops.load_slot(folder, 1)
+    if len(files) != 2:
+        pytest.skip('needs both files of slot 1')
+    wgs = tmp_path / 'wgs' / '000901FAA896C30E_29070100B936489ABCE8B9AF3980429C'
+    _fake_wgs(wgs, files)
+    raw0 = (wgs / 'containers.index').read_bytes()
+    assert X.write_index(X.read_index(wgs / 'containers.index')) == raw0          # index round trip
+    base = tmp_path / 'appdata'
+    base.mkdir()
+    i = I.do_import(base, str(tmp_path / 'wgs'), 1, 'Amigo', readonly=False)
+    assert i['kind'] == 'xbox' and set(i['xbox']['state']) == {'Slot1Auto', 'Slot1Manual'}
+    d = I.folder_of(base, i['id'])
+    s = Session(SaveFolder(d), 1, imported=True)
+    s.stage(ops.plan_rename(SaveFolder(d), 1, 'Devuelta', files=s.views()))
+    assert all(v['ok'] for v in s.save()['verified'])
+    pre = I.xbox_preview(base, i['id'], False)
+    assert pre['problems'] == [] and [w['container'] for w in pre['writes']] == ['Slot1Auto', 'Slot1Manual']
+    assert I.xbox_preview(base, i['id'], True)['problems'] == ['game_running']
+    with pytest.raises(PermissionError):
+        I.export_xbox(base, i['id'], True)
+    r = I.export_xbox(base, i['id'], False)
+    assert r['written'] == ['Slot1Auto', 'Slot1Manual'] and Path(r['backup'], 'containers.index').read_bytes() == raw0
+    # what the game will read: the edited save, one container per folder, as the game leaves it
+    src = I.Source(str(tmp_path / 'wgs'))
+    back = {fi: (raw, meta) for fi, raw, meta in src.raws(1)}
+    src.close()
+    mine = {f.file_index: f.raw for f in ops.load_slot(SaveFolder(d), 1)}
+    assert back[1][0] == mine[1] and back[2][0] == mine[2] and back[2][1].name == 'Devuelta'
+    ix = X.read_index(wgs / 'containers.index')
+    assert [e.num for e in ix.entries] == [2, 2] and all(e.etag == '"0x8DF0000000000001"' for e in ix.entries)
+    for e in ix.entries:
+        assert sorted(p.name for p in (wgs / e.folder).iterdir())[-1] == 'container.2'
+        assert len(list((wgs / e.folder).iterdir())) == 3
+    # a second write-back is fine; after the game saves over the slot, it is refused
+    assert I.xbox_preview(base, i['id'], False)['problems'] == []
+    c = X.read_container(wgs / ix.entries[1].folder / 'container.2')
+    X.replace_container(wgs, 'Slot1Manual', (wgs / ix.entries[1].folder / X.blob_name(c['data'])).read_bytes(),
+                        (wgs / ix.entries[1].folder / X.blob_name(c['meta'])).read_bytes())
+    assert I.xbox_preview(base, i['id'], False)['problems'] == ['xbox_changed']
+    # imported from a .zip: nowhere to write back
+    import zipfile
+    z = tmp_path / 'gp.zip'
+    with zipfile.ZipFile(z, 'w') as zf:
+        for p in (tmp_path / 'wgs').rglob('*'):
+            if p.is_file():
+                zf.write(p, str(p.relative_to(tmp_path)))
+    j = I.do_import(base, str(z), 1, 'Zip', readonly=False)
+    assert 'xbox' not in j and I.xbox_preview(base, j['id'], False)['problems'] == ['xbox_reimport']
+
+
+def test_linux_and_mac_save_folders(tmp_path, monkeypatch):
+    import sys as _sys
+    from olympian.core import savefile as SF, safety as SA
+    monkeypatch.delenv('APPDATA', raising=False)
+    monkeypatch.delenv('OLYMPIAN_SAVE_DIR', raising=False)
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    nms = tmp_path / '.local/share/Steam/steamapps/compatdata/275850/pfx/drive_c/users/steamuser/AppData/Roaming/HelloGames/NMS'
+    (nms / 'st_7656').mkdir(parents=True)
+    monkeypatch.setattr(_sys, 'platform', 'linux')
+    assert SF.default_roots() == [nms / 'st_7656']
+    assert SA.game_running() in (True, False)                 # /proc is readable here
+    mac = tmp_path / 'Library/Application Support/HelloGames/NMS'
+    (mac / 'st_1').mkdir(parents=True)
+    monkeypatch.setattr(_sys, 'platform', 'darwin')
+    assert SF.default_roots() == [mac / 'st_1']
+
+
+def test_visited_galaxies_and_journey(folder):
+    from olympian.core import overview as OV
+    f = ops.load_slot(folder, 1)[-1]
+    g = ops.visited_galaxies(f)
+    cur = f.psd()[f.keys.s('UniverseAddress')][f.keys.s('RealityIndex')]
+    assert cur in g and g == sorted(set(g)) and all(0 <= x <= 255 for x in g)
+    assert ops.describe_slot(folder, 1)['files'][0]['visited_galaxies']
+    j = OV.journey(f.psd(), f.keys, 'es')
+    if not (GD.load() or {}).get('journey'):
+        pytest.skip('no journey data')
+    assert len(j) >= 3 and all(c['name'] and c['medals'] for c in j)
+    for c in j:
+        for m in c['medals']:
+            assert 0 <= m['level'] <= m['max'] and m['title'] and m['level_name']
+            assert m['next'] is None or m['value'] < m['next']
+
+
+def test_ship_cargo_sort_puts_shield_chargers_first(folder):
+    def mutate(psd, k):                    # some sodium in the last free cell of the first ship's cargo
+        ship = psd[k.s('ShipOwnership')][0]
+        inv = ship[k.s('Inventory')]
+        slots = inv[k.s('Slots')]
+        used = {(x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in slots}
+        free = [(v[k.s('X')], v[k.s('Y')]) for v in inv[k.s('ValidSlotIndices')]
+                if (v[k.s('X')], v[k.s('Y')]) not in used]
+        base = _copy.deepcopy(next(x for x in slots if x[k.s('Type')][k.s('InventoryType')] == 'Substance'))
+        base[k.s('Id')], base[k.s('Amount')], base[k.s('MaxAmount')] = '^CATALYST1', 50, 9999
+        base[k.s('Index')] = {k.s('X'): free[-1][0], k.s('Y'): free[-1][1]}
+        slots.append(base)
+    files = _crafted(folder, mutate)
+    k = files[0].keys
+    ie = INV.InvEdit(files[0])
+    assert {'CATALYST1', 'CATALYST2'} <= INV.shield_chargers(ie, ie.cont['ship0'])
+    assert INV.shield_chargers(ie, ie.cont['chest6']) == set()
+    for d in ('asc', 'desc'):
+        p = INV.plan_inventory(folder, 1, 'sort', {'inv': 'ship0', 'key': 'name', 'dir': d}, files=files)
+        assert not p.blocked, p.messages
+        new = _apply(files, p)
+        assert _inv_totals(new) == _inv_totals(files)
+        slots = sorted(_byid(new[0])['ship0']['inv'][k.s('Slots')], key=lambda x: (INV._xy(x, k)[1], INV._xy(x, k)[0]))
+        loose = [x for x in slots if INV._type(x, k) in INV.TYPE_ORDER]
+        assert loose[0][k.s('Id')].lstrip('^') in ('CATALYST1', 'CATALYST2', 'SHIPCHARGE')
+
+
+def test_inventory_gather_one_item_everywhere(folder):
+    """Right click -> "move all here": every stack with that exact ID, from every other inventory (exosuit and
+    ships included), into the clicked inventory, with nothing created or lost."""
+    files = ops.load_slot(folder, 1)
+    k = files[0].keys
+    C0 = _byid(files[0])
+    seen = collections.Counter()
+    where = collections.defaultdict(set)
+    for cid, c in C0.items():
+        for x in c['inv'][k.s('Slots')]:
+            if INV._type(x, k) in INV.TYPE_ORDER:
+                seen[x[k.s('Id')]] += 1
+                where[x[k.s('Id')]].add(cid)
+    iid = next((i for i, _n in seen.most_common() if len(where[i]) > 1), None)
+    if iid is None:
+        pytest.skip('no item in two inventories')
+    dst = sorted(where[iid])[0]
+    cell = next(INV._xy(x, k) for x in C0[dst]['inv'][k.s('Slots')] if x[k.s('Id')] == iid)
+    before = _inv_totals(files)
+    p = INV.plan_inventory(folder, 1, 'gather_id', {'inv': dst, 'cell': list(cell)}, files=files)
+    assert not p.blocked, p.messages
+    assert p.summary['code'] == 'chg_inv_gather_item'
+    new = _apply(files, p)
+    assert _inv_totals(new) == before
+    C = _byid(new[0])
+    others = sum(1 for cid in where[iid] if cid != dst for x in C[cid]['inv'][k.s('Slots')] if x[k.s('Id')] == iid)
+    assert others == 0 or any(m['code'] in ('inv_gather_left', 'inv_gather_unknown') for m in p.messages)
+    for cid, c in C.items():                      # nothing else moves
+        if cid not in where[iid]:
+            assert c['inv'] == C0[cid]['inv']
+    # empty cell or bad cell: rejected
+    free = _first_free(C0[dst], k)
+    assert INV.plan_inventory(folder, 1, 'gather_id', {'inv': dst, 'cell': list(free)}, files=files).blocked
+    assert INV.plan_inventory(folder, 1, 'gather_id', {'inv': dst, 'cell': 'x'}, files=files).blocked
+
+
+def test_delete_corvette_removes_its_base_like_the_game(folder):
+    """As the game does when you dispose of a corvette (user's slot 6, 23/nov): its ShipOwnership entry is
+    emptied, its PlayerShipBase leaves PersistentPlayerBases, the other bases keep their order and the
+    corvette editor's index is left as it was."""
+    ships, p, k = _ships(folder)
+    pt = k.s('PersistentBaseTypes')
+    linked = [j for j, b in enumerate(p[k.s('PersistentPlayerBases')])
+              if b[k.s('BaseType')][pt] == 'PlayerShipBase' and b.get(k.s('UserData')) == 3]
+    if not linked:
+        pytest.skip('corvette 3 has no base in the fixture')
+    bases_before = p[k.s('PersistentPlayerBases')]
+    edit_idx = p.get(k.s('CorvetteEditAssociatedShipIndex'))
+    plan = _stage_and_save(folder, 3, 'delete')
+    codes = [m['code'] for m in plan.messages]
+    assert 'ship_corvette_delete_what' in codes and 'ship_corvette_delete_parts' in codes
+    after, p2, _ = _ships(folder)
+    assert after[3][k.s('Resource')][k.s('Filename')] == '' and after[3][k.s('Name')] == ''
+    assert p2[k.s('PersistentPlayerBases')] == [b for j, b in enumerate(bases_before) if j != linked[0]]
+    assert p2.get(k.s('CorvetteEditAssociatedShipIndex')) == edit_idx
+    for i in range(len(ships)):
+        if i != 3:
+            assert after[i] == ships[i]
+
+
+def test_inventory_delete_selected_in_several_inventories(folder):
+    """«Borrar seleccionados»: the cells picked in two inventories go in one change; nothing else moves."""
+    s = Session(folder, 1)
+    files = s.views()
+    k = files[0].keys
+    C = _byid(files[0])
+    picks = {}
+    for cid in ('suit', 'freighter'):
+        cells = sorted(_cells(C[cid], k))[:2]
+        if len(cells) < 2:
+            pytest.skip(f'{cid} has fewer than 2 items in the fixture')
+        picks[cid] = [list(c) for c in cells]
+    before = _inv_totals(files)
+    gone = collections.Counter()
+    for cid, cells in picks.items():
+        for c in cells:
+            it = _cells(C[cid], k)[tuple(c)]
+            gone[(it[k.s('Id')], INV._type(it, k))] += it[k.s('Amount')]
+    p = INV.plan_inventory(folder, 1, 'delete_many', {'sel': picks}, files=files)
+    assert not p.blocked, p.messages
+    assert p.summary['code'] == 'chg_inv_delete_many' and p.summary['p']['count'] == 4
+    s.stage(p)
+    after = _byid(s.views()[0])
+    for cid, cells in picks.items():
+        assert not any(tuple(c) in _cells(after[cid], k) for c in cells)
+        assert len(_cells(after[cid], k)) == len(_cells(C[cid], k)) - 2
+    assert all(v['ok'] for v in s.save()['verified'])
+    assert _inv_totals(ops.load_slot(folder, 1)) == before - gone
+    assert INV.plan_inventory(folder, 1, 'delete_many', {'sel': {'suit': [[40, 40]]}}).blocked
+    assert INV.plan_inventory(folder, 1, 'delete_many', {'sel': {'nope': [[0, 0]]}}).blocked

@@ -209,6 +209,22 @@ def vehicle_name(i: int, lang: str) -> str:
     return gamedata.text(keys[i], lang) if i < len(keys) and keys[i] else ''
 
 
+def _tech_values(items: list, special: set) -> dict:
+    """Exact values of the procedural upgrades in a grid, as the game's tooltip shows them."""
+    from . import techstats
+    procs = [it for it in items if it[5] == 'Technology'
+             and (gamedata.item(techstats.split_id(str(it[2]).lstrip('^'))[0]) or {}).get('k') == 'proc']
+    if not procs or not techstats.rules():
+        return {}
+    try:
+        grid = techstats.Grid({(it[0], it[1]): str(it[2]).lstrip('^') for it in items if it[5] == 'Technology'},
+                              set(special), {(it[0], it[1]) for it in items if it[8]})
+        vals = {f'{it[0]},{it[1]}': techstats.tooltip(grid, (it[0], it[1])) for it in procs}
+    except Exception:                       # never break the view over the extra values
+        return {}
+    return {c: v for c, v in vals.items() if v}
+
+
 def describe(files: list[SaveFile], lang: str = 'es') -> dict:
     """What the Inventarios view shows (from the first file of the slot)."""
     f = files[0]
@@ -231,7 +247,7 @@ def describe(files: list[SaveFile], lang: str = 'es') -> dict:
                     'vname': vehicle_name(c['vehicle'], lang) if 'vehicle' in c else '', 'mt': c.get('mt'),
                     'active': bool(c.get('active')), 'blocked': c.get('blocked'),
                     'w': c['w'], 'h': c['h'], 'valid': sorted(c['valid'], key=lambda v: (v[1], v[0])),
-                    'items': items})
+                    'items': items, 'vals': _tech_values(items, c.get('special') or set())})
     meta = {}
     for c in out:
         for it in c['items']:
@@ -591,6 +607,10 @@ def _sort(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
         main = rank if key == 'rarity' else value
         known.sort(key=lambda e: ((-1 if desc else 1) * main(e[1][k.s('Id')]), name_of(e[1]), -e[1][k.s('Amount')]))
     merged = known + unknown
+    shield = shield_chargers(ie, bx.c)
+    if shield:            # ship cargo: what recharges the shield goes first, whatever the order (for a surprise fight)
+        merged = [e for e in merged if e[1][k.s('Id')].lstrip('^') in shield] + \
+                 [e for e in merged if e[1][k.s('Id')].lstrip('^') not in shield]
     taken = {_xy(p, k) for _b, p in fixed}
     free = _free_cells(bx, k, taken)
     if len(merged) > len(free):            # cannot happen: merging never adds stacks
@@ -608,6 +628,22 @@ def _sort(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
     plan.messages.append(msg('info', 'inv_sort_what', merged=n, items=len(merged), key=key, dir='desc' if desc else 'asc',
                              inv=_label(bx.c)))
     return True
+
+
+def shield_chargers(ie: 'InvEdit', c: dict) -> set:
+    """Items that recharge the shield installed on a ship (the game's ChargeBy of its shield technology:
+    sodium, sodium nitrate, Starshield Battery; living ships and sentinel ships use their own). Empty for other inventories."""
+    if c.get('kind') != 'ship':
+        return set()
+    k = ie.k
+    ship = ie.f.psd()[k.s('ShipOwnership')][c['ship']]
+    out: set = set()
+    for g in ('Inventory_TechOnly', 'Inventory'):        # older ships keep their technology in the cargo grid
+        for x in (ship.get(k.s(g)) or {}).get(k.s('Slots')) or []:
+            it = gamedata.item(str(x.get(k.s('Id')) or '').lstrip('^')) or {}
+            if it.get('k') == 'tech' and it.get('stat') == 'Ship_Armour_Shield':
+                out.update(it.get('charge_by') or ())
+    return out
 
 
 GATHER_TARGETS = ('chest', 'corvette', 'freighter', 'vehicle')   # cargo inventories; not exosuit or ships
@@ -690,6 +726,51 @@ def _gather(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
                                  inv=_label(tb.c)))
         return False
     plan.messages.append(msg('info', 'inv_gather_what', group=grp, n=moved, units=units, inv=_label(tb.c)))
+    if left:
+        plan.messages.append(msg('warn', 'inv_gather_left', n=left, inv=_label(tb.c)))
+    if unknown:
+        plan.messages.append(msg('warn', 'inv_gather_unknown', n=unknown))
+    return True
+
+
+def _gather_id(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
+    """Right click on an item -> "move here all": every stack with exactly that ID (procedural items
+    included, seed and all) from all the other inventories, into the clicked one; the game's stack limits."""
+    k = ie.k
+    cid = str(params.get('inv'))
+    try:
+        cell = tuple(int(v) for v in params.get('cell'))
+    except (TypeError, ValueError):
+        cell = None
+    if cid not in ie.cont or ie.cont[cid]['kind'] not in SCOPES['all'] or not cell or len(cell) != 2:
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    tb = ie.box(cid)
+    here = next((p for _b, p in tb.items if _xy(p, k) == cell), None)
+    if here is None or _type(here, k) not in TYPE_ORDER:
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    iid = here[k.s('Id')]
+    srcs = [ie.box(x) for x in gather_sources(ie, cid, 'all')]
+    ie.totals_before = ie.totals({tb, *srcs})
+    taken = {_xy(p, k) for _b, p in tb.items}
+    free = _free_cells(tb, k, taken)
+    moved = units = left = unknown = 0
+    for sb in srcs:
+        for entry in list(sb.items):
+            if entry[1][k.s('Id')] != iid or _type(entry[1], k) not in TYPE_ORDER:
+                continue
+            res, n = _transfer(ie, tb, sb, entry, free)
+            units += n
+            moved += res == 'all'
+            left += res in ('part', 'none')
+            unknown += res == 'unknown'
+    item = str(iid).lstrip('^')
+    if not units:
+        plan.messages.append(msg('block', 'inv_gather_item_full' if left else 'inv_gather_item_none', item=item,
+                                 inv=_label(tb.c)))
+        return False
+    plan.messages.append(msg('info', 'inv_gather_item_what', item=item, n=moved, units=units, inv=_label(tb.c)))
     if left:
         plan.messages.append(msg('warn', 'inv_gather_left', n=left, inv=_label(tb.c)))
     if unknown:
@@ -870,6 +951,43 @@ def _delete(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
     bx.take(j)
     ie.totals_delta = {(info['_id'], info['_t']): -info['_amount']}
     plan.messages.append(msg('warn', 'inv_delete_what', n=info['_amount'], **_lab_item(bx, info, cell)))
+    return True
+
+
+def _delete_many(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
+    """Selected cells of one or more inventories -> deleted (the user confirms the preview first). Like one by one:
+    technology the game will not dismantle and a corvette's technology stay where they are."""
+    sel = params.get('sel')
+    if not isinstance(sel, dict) or not sel or any(str(c) not in ie.cont for c in sel):
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    boxes = [(ie.box(str(c)), _cells_param(cells)) for c, cells in sel.items()]
+    ie.totals_before = ie.totals({bx for bx, _ in boxes})
+    delta, done, kept, where = {}, 0, [], []
+    for bx, cells in boxes:
+        n0 = done
+        for cell in cells:
+            j = bx.at(cell)
+            if j is None:
+                continue
+            info = bx.info(j)
+            if info['_t'] not in TYPE_ORDER and ((gamedata.item(info['_id']) or {}).get('core')
+                                                 or (bx.c['kind'] == 'shiptech' and _ship_kind(bx.c) is None)):
+                kept.append(gamedata.resolve(info['_id']) or info['_id'])
+                continue
+            bx.take(j)
+            key = (info['_id'], info['_t'])
+            delta[key] = delta.get(key, 0) - info['_amount']
+            done += 1
+        if done > n0:
+            where.append(_label(bx.c))
+    if not done:
+        plan.messages.append(msg('block', 'inv_delmany_none'))
+        return False
+    ie.totals_delta = delta
+    plan.messages.append(msg('danger', 'inv_delmany_what', count=done, invs=where))
+    if kept:
+        plan.messages.append(msg('warn', 'inv_delmany_kept', count=len(kept), ids=kept))
     return True
 
 
@@ -1087,8 +1205,44 @@ def _add(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
     return True
 
 
-ACTIONS = {'move': _move, 'sort': _sort, 'gather': _gather, 'rename': _rename, 'move_many': _move_many,
-           'split': _split, 'fill': _fill, 'dup': _dup, 'delete': _delete, 'add': _add,
+def _arrange(ie: InvEdit, plan: Plan, params: dict, fname: str) -> bool:
+    """Several pieces of one grid to new cells at once (auto-sort). Nothing is created or removed: every
+    source cell must hold a piece, every target must be a usable cell, and no two pieces end on one cell."""
+    cid = str(params.get('inv'))
+    moves = params.get('moves') or []
+    if cid not in ie.cont or not isinstance(moves, list) or not moves or len(moves) > 200:
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    try:
+        pairs = [(tuple(int(a) for a in m[0]), tuple(int(a) for a in m[1])) for m in moves]
+    except (TypeError, ValueError, IndexError):
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    bx = ie.box(cid)
+    ie.totals_before = ie.totals({bx})
+    srcs = [a for a, _b in pairs]
+    if len(set(srcs)) != len(srcs) or len({b for _a, b in pairs}) != len(pairs):
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    idx = [bx.at(a) for a in srcs]
+    if any(j is None for j in idx):
+        plan.messages.append(msg('block', 'inv_move_empty'))
+        return False
+    if any(b not in bx.c['valid'] for _a, b in pairs):
+        plan.messages.append(msg('block', 'inv_move_locked'))
+        return False
+    stay = {_xy(p, ie.k) for j, (_b, p) in enumerate(bx.items) if j not in idx}
+    if any(b in stay for _a, b in pairs):
+        plan.messages.append(msg('block', 'inv_move_invalid'))
+        return False
+    for j, (_a, b) in zip(idx, pairs):
+        bx.set_xy(j, b)
+    plan.messages.append(msg('info', 'inv_arrange_what', n=len(pairs), inv=_label(bx.c)))
+    return True
+
+
+ACTIONS = {'arrange': _arrange, 'move': _move, 'sort': _sort, 'gather': _gather, 'gather_id': _gather_id, 'rename': _rename, 'move_many': _move_many,
+           'split': _split, 'fill': _fill, 'dup': _dup, 'delete': _delete, 'delete_many': _delete_many, 'add': _add,
            'repair': _repair}
 
 
@@ -1102,8 +1256,12 @@ def plan_inventory(folder: SaveFolder, slot: int, action: str, params: dict | No
         raise LookupError(action)
     byid = {c['id']: c for c in containers(files[0], tech=True)}
     ids = [str(params.get(x)) for x in ('src', 'dst', 'inv') if params.get(x) is not None]
+    if action == 'delete_many' and isinstance(params.get('sel'), dict):
+        ids += [str(c) for c in params['sel'] if str(c) in byid]
     if action == 'gather' and ids and ids[0] in byid:
         ids += gather_sources(byid, ids[0], str(params.get('from') or 'storage'))
+    elif action == 'gather_id' and ids and ids[0] in byid:
+        ids += gather_sources(byid, ids[0], 'all')
     # the edit is described by cells, so it goes to every file that holds the same inventories; when the
     # autosave (odd file) differs from the manual save (even file: ship exit, save point, beacon), only the
     # manual save is edited and the autosave is left as it was
@@ -1141,9 +1299,18 @@ def plan_inventory(folder: SaveFolder, slot: int, action: str, params: dict | No
         plan.summary = msg('info', 'chg_inv_sort', inv=_label(byid[ids[0]]), key=str(params.get('key') or 'name'))
     elif action == 'gather':
         plan.summary = msg('info', 'chg_inv_gather', inv=_label(byid[ids[0]]), group=str(params.get('group')))
+    elif action == 'gather_id':
+        last = next(m for m in reversed(plan.messages) if m['code'] == 'inv_gather_item_what')
+        plan.summary = msg('info', 'chg_inv_gather_item', inv=_label(byid[ids[0]]), item=last['p']['item'],
+                           n=last['p']['units'])
+    elif action == 'arrange':
+        plan.summary = msg('info', 'chg_inv_arrange', inv=_label(byid[ids[0]]), n=len(params.get('moves') or []))
     elif action == 'move_many':
         plan.summary = msg('info', 'chg_inv_move_many', src=_label(byid[ids[0]]), dst=_label(byid[ids[1]]),
                            n=len(params.get('cells') or []))
+    elif action == 'delete_many':
+        last = next(m for m in reversed(plan.messages) if m['code'] == 'inv_delmany_what')
+        plan.summary = msg('info', 'chg_inv_delete_many', count=last['p']['count'], n_inv=len(last['p']['invs']))
     elif action in ('split', 'fill', 'dup', 'delete', 'add', 'repair'):
         last = next(m for m in reversed(plan.messages) if m['code'].startswith('inv_') and m['code'].endswith('_what'))
         code = 'chg_inv_uninstall' if last['code'] == 'inv_uninstall_what' else 'chg_inv_' + action

@@ -2,7 +2,7 @@
 freighter, exocraft, corvettes and the multi-tool in hand. Read only."""
 from __future__ import annotations
 
-from . import inventories
+from . import gamedata, inventories
 from .ops import ship_type
 from .savefile import SaveFile
 
@@ -25,6 +25,46 @@ def _global_stats(psd: dict, k) -> dict:
                 out[(st.get(k.s('Id')) or '').lstrip('^')] = v if isinstance(v, int) else 0
             return out
     return {}
+
+
+def _stat_values(psd: dict, k) -> dict:
+    """GLOBAL_STATS as numbers (whole or decimal, as the game stores each one)."""
+    for g in psd.get(k.s('Stats')) or []:
+        if isinstance(g, dict) and g.get(k.s('GroupId')) == '^GLOBAL_STATS':
+            out = {}
+            for st in g.get(k.s('Stats')) or []:
+                v = st.get(k.s('Value')) or {}
+                n = v.get(k.s('IntValue'))
+                if not isinstance(n, (int, float)) or not n:
+                    n = v.get(k.s('FloatValue'))
+                out[(st.get(k.s('Id')) or '').lstrip('^')] = n if isinstance(n, (int, float)) else 0
+            return out
+    return {}
+
+
+def journey(psd: dict, k, lang: str = 'es') -> list[dict]:
+    """The game's journey page (medals): each category with the stat behind each medal, the level reached
+    in the game's own table of levels and what the next level needs. Read only."""
+    j = (gamedata.load() or {}).get('journey') or {}
+    vals = _stat_values(psd, k)
+    out = []
+    for c in j.get('categories') or []:
+        rows = []
+        for m in c.get('medals') or []:
+            lv = m.get('levels') or []
+            if not lv:
+                continue
+            v = vals.get(m['stat'], 0)
+            idx = max([i for i, (th, _n) in enumerate(lv) if v >= th] or [0])
+            nxt = lv[idx + 1][0] if idx + 1 < len(lv) else None
+            rows.append({'stat': m['stat'], 'title': gamedata.text(m.get('title'), lang) or m['stat'],
+                         'value': v, 'float': bool(m.get('float')), 'level': idx, 'max': len(lv) - 1,
+                         'level_name': gamedata.text(lv[idx][1], lang), 'from': lv[idx][0], 'next': nxt})
+        if rows:
+            first = rows[0]['stat']
+            out.append({'name': gamedata.text(c.get('name'), lang) or c.get('name'), 'medals': rows,
+                        'faction': first if first in REPUTATION else None})
+    return out
 
 
 # body base of the player character (CharacterCustomisationData[0]); seen in saves: ASTRONAUT_BASE, BUILDERS_BASE
@@ -77,7 +117,11 @@ def describe(files: list[SaveFile], lang: str = 'es') -> dict:
         mt = {'index': mi, 'name': mts[mi].get(k.s('Name')) or '',
               'class': ((st.get(k.s('Class')) or {}).get(k.s('InventoryClass')))}
 
+    jr = journey(psd, k, lang)
+    by_faction = {c['faction']: c['medals'] for c in jr if c.get('faction')}
+    # each faction: its standing and, from the journey page, the level of that standing and the other medals
+    rep = [{'id': r, 'value': stats[r], 'medals': by_faction.get(r, [])} for r in REPUTATION if r in stats]
     return {'race': race(psd, k), 'units': _u32(psd.get(k.s('Units'))), 'nanites': psd.get(k.s('Nanites')),
-            'quicksilver': psd.get(k.s('Specials')),
-            'reputation': [{'id': r, 'value': stats[r]} for r in REPUTATION if r in stats],
-            'primary_ship': primary, 'corvettes': corvettes, 'vehicle': veh, 'multitool': mt}
+            'quicksilver': psd.get(k.s('Specials')), 'reputation': rep,
+            'primary_ship': primary, 'corvettes': corvettes, 'vehicle': veh, 'multitool': mt,
+            'journey': [c for c in jr if not c.get('faction')]}

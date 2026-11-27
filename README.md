@@ -5,19 +5,20 @@
 <p align="center">A careful, visual save editor for <b>No Man's Sky</b> on Windows.<br>
 Every change is previewed, verified byte by byte and written only after an automatic backup.</p>
 
-<p align="center"><a href="README.es.md">Leer en español</a> · <a href="FAQ.md">FAQ</a> · <a href="CHANGELOG.md">Changelog</a></p>
+<p align="center"><a href="README.es.md">Leer en español</a> · <a href="README.ru.md">Читать на русском</a> · <a href="FAQ.md">FAQ</a> · <a href="CHANGELOG.md">Changelog</a></p>
 
 ![Settlements view](docs/screenshots/07-settlements.png)
 
-## What's new in 0.9.0
+## What's new in 0.10.0
 
-- **Optional PIN + 2FA code protection** (Google/Microsoft Authenticator, Authy…): asked when Olympian opens and again for destructive actions. Works offline and without an account. Or the **"I live alone"** option if you do not share the PC.
-- **Your manual save comes first:** Olympian shows and edits the save you made yourself (leaving the ship or at a save point); the autosave is only changed when it holds the same data.
-- **Start:** delete saves (always with a full backup first), backup disk usage with a **purge** that keeps the newest 10, an **optional copy of every backup outside the save folder**, and a button with the game's base computer icon to come back here from anywhere.
-- **Summary with icons:** race, units, nanites, quicksilver, reputation, primary ship, freighter, exocraft, corvettes and the multi-tool in hand.
-- **Ships:** one header with the actions as icons; repair damaged modules and **damaged cells of salvaged ships** as the game does; charge visible in each cell; **adjacency frames** in the technology grid; **tooltips with the game's own description** and upgrade ranges; expand technology to 60 cells when the ship already has its 4 supercharged cells; **copy or move a ship to other saves**; **seed history**.
-- **Settlements:** a grid of the **48 lots** with their class, upgrades in progress (gold cog), upgrades ready to complete (green check) and new buildings under construction.
-- **Missions** sharing a title are grouped. Proportional layout: grids grow and shrink with the window.
+- **Values like the game:** the tooltip of each procedural upgrade shows its exact value, and every ship shows its **Damage Potential, Shield Strength, Hyperdrive Range and Manoeuvrability** as on the game's ship screen.
+- **Auto-sort technology** for ships and corvettes: choose one or two priorities for the supercharged cells and the rest is placed for adjacency.
+- **Ships:** cargo "Sort by…" (shield recharge items first); copying modules only brings technology the ship type accepts (sentinel and living technology becomes its equivalent), and **Fix technology** corrects ships that already have unsupported technology; **delete selected** items; **corvettes** can be repaired, have cells enabled, be expanded to the S maximum, auto-sorted and **deleted as the game does**.
+- **Inventories:** "📥 Move here all" with right-click; **expand / collapse all**; **delete selected** across inventories; **drag several selected items** at once.
+- **Settlements:** game-style class shields and a **green check when a timer has finished**.
+- **Imported saves** of other players (Steam or Xbox/Game Pass) in their own space, editable and sent back, **including writing to Game Pass**.
+- **Summary and Travel:** reputation banners, **medals and milestones**, ✔ on visited galaxies, game-style tooltips, **undo / redo**.
+- **Russian** interface and game content; **Linux** (Steam/Proton, Steam Deck) and **macOS** support.
 
 Full list in the [CHANGELOG](CHANGELOG.md).
 
@@ -38,13 +39,13 @@ Most save editors let you change anything. Olympian focuses on changing things *
 | **Start** | Pick a save, back up any slot, copy a slot to another, restore any backup into any slot (*Restore to…*), delete saves (with protection). Backup disk usage and purge of old ones. |
 | **Summary** | Save overview, rename the save, last 10 changes with "go back to before this change". Economy, reputation, primary ship, freighter, exocraft, corvettes and main weapon, each linked to its view. |
 | **Travel** | All 256 galaxies; destination by portal glyphs, galactic coordinates or manually; appear inside your ship floating in space. |
-| **Ships** | Reorder by dragging, choose the primary ship, rename, repair damaged modules (one or all), enable cells, recharge, expand cargo to the class maximum (and technology to 60 once the ship already has its 4 supercharged cells), change seed (or copy another ship's of the same model), copy modules from another ship, duplicate, delete. Supercharged-slot map and adjacency-bonus frames. Corvettes and living ships only show the actions that are safe for them. |
-| **Inventories** | Exosuit, freighter, 10 storage containers, corvette storage, exocraft and ship cargo on one screen. Drag between inventories, merge stacks, sort by name/rarity/value, "move here all the…" by category, search with totals, split/fill/duplicate/delete stacks, add items on empty cells. Installed technology of the exosuit, freighter and multi-tools: install, uninstall, move. |
+| **Ships** | Reorder by dragging, choose the primary ship, rename, repair damaged modules (one or all), enable cells, recharge, expand cargo to the class maximum (and technology to 60 once the ship already has its 4 supercharged cells), change seed (or copy another ship's of the same model), copy modules from another ship (only technology that ship type accepts), fix unsupported technology, auto-sort technology, sort cargo, delete selected items, duplicate, delete. Real values as on the game's ship screen, supercharged-slot map and adjacency-bonus frames. Corvettes (including delete, as the game does) and living ships only show the actions that are safe for them. |
+| **Inventories** | Exosuit, freighter, 10 storage containers, corvette storage, exocraft and ship cargo on one screen. Drag between inventories, merge stacks, sort by name/rarity/value, "move here all the…" by category, search with totals, split/fill/duplicate/delete stacks, "move here all" of one item, select several items to move, drag or delete them together, expand/collapse all, add items on empty cells. Installed technology of the exosuit, freighter and multi-tools: install, uninstall, move. |
 | **Missions** | Every mission with its in-game name, group and state. Reset (optionally the rest of its series), delete stuck or duplicated entries, change stage (experimental). Side panel with "what to do now / next" from the game's own objective texts. Missions sharing a title are grouped. |
-| **Settlements** | Your settlements only: stats, perks with their exact effect, pending decision, production, construction in progress and the 48 lots with their class and upgrades in progress. Rename, remove existing perks, dismiss the pending decision. An advisor based on the game's data (debt, weak stats and which perks cause them…) and the known settlement mission routes with your progress. |
+| **Settlements** | Your settlements only: stats, perks with their exact effect, pending decision, production, construction in progress and the 48 lots with their class, upgrades in progress and a check when a timer has finished. Rename, remove existing perks, dismiss the pending decision. An advisor based on the game's data (debt, weak stats and which perks cause them…) and the known settlement mission routes with your progress. |
 | **JSON viewer** | The whole save as a tree with readable key names, item names next to IDs, search, notes on what each field is and what editing it risks, computed dependencies, export. Optional **expert mode** to change single values (same type only, verified like everything else). |
 
-Languages: the interface in **English or Spanish**, and game terms separately in English, Latin-American Spanish or Spain Spanish.
+Languages: the interface in **English, Spanish or Russian**, and game terms separately in English, Latin-American Spanish, Spain Spanish or Russian.
 
 ## Screenshots
 
@@ -61,7 +62,7 @@ Languages: the interface in **English or Spanish**, and game terms separately in
 - Microsoft Edge (included with Windows) — Olympian opens in an app-style Edge window.
 - Python 3.11+ — installed automatically the first time if missing (official Python 3.13, for your user only, via `winget`).
 
-Console saves (PlayStation, Xbox, Switch) and the Xbox / Game Pass PC save format are **not** supported.
+**Xbox / Game Pass PC** saves are not opened directly: import them in *Start → Imported saves* (the game's `wgs` folder), edit them there and send them back with *Export for its owner → Xbox / Game Pass* (the `wgs` folder is backed up before writing). Console saves (PlayStation, Xbox, Switch) are **not** supported.
 
 ## What Olympian NMS Save Editor does and doesn't do
 
@@ -82,9 +83,11 @@ Every mod or editor changes the game, and Olympian NMS Save Editor is no excepti
 3. **Close the game before saving.** Olympian checks and refuses to write while the game is running.
 4. **Steam Cloud:** after saving, start the game on *this* PC first so Steam uploads the new version.
 
-**Updating to a new version:** each zip has its folder with the version in its name (`OlympianNMSSaveEditor_v0.9.0`). Extract it as a new folder, open it with its `.bat` and, once it works, delete the old folder. Your settings, protection and backups do not live in the app folder, so nothing is lost. Extracting over the previous version also works, but it may leave old files that are no longer used.
+**Updating to a new version:** each zip has its folder with the version in its name (`OlympianNMSSaveEditor_v0.10.0`). Extract it as a new folder, open it with its `.bat` and, once it works, delete the old folder. Your settings, protection and backups do not live in the app folder, so nothing is lost. Extracting over the previous version also works, but it may leave old files that are no longer used.
 
-Windows SmartScreen or your antivirus may warn because the `.bat` is not signed: *More info → Run anyway*. Olympian only runs a local server on `127.0.0.1` with a per-session key and does not connect to the internet.
+**Linux (Steam / Proton, Steam Deck) and macOS:** you need Python 3.11 or newer. Open a terminal in the app's folder and type `sh run_olympian_nmsse.sh` (on macOS, double-clicking `run_olympian_nmsse.command` also works). It looks for your saves in the game's Proton folder (`.../steamapps/compatdata/275850/pfx/.../HelloGames/NMS`) or in `~/Library/Application Support/HelloGames/NMS`. The window opens in Edge, Chrome, Chromium or Brave if installed; otherwise in your browser. Your settings live in `~/.config/OlympianNMS` (Linux) or `~/Library/Application Support/OlympianNMS` (macOS). *Not yet tested on a real machine with the game: if something fails, send us `olympian_log.txt`.*
+
+SmartScreen or your antivirus may warn because the `.bat` is not signed: *More info → Run anyway*. Olympian only runs a local server on `127.0.0.1` with a per-session key and does not connect to the internet.
 
 ## Where things are kept
 
@@ -119,7 +122,7 @@ python -m pytest tests        :: tests
 ```
 
 - `olympian/core/` — save format (`hgfile`, `savefile`, `meta`), byte-faithful JSON spans (`jspan`, `pathedit`), every editor section and the safety net (`safety`, `session`, `ops`).
-- `olympian/web/` — the interface (plain HTML/CSS/JS, no build step) and its texts (`i18n/en.json`, `i18n/es.json`).
+- `olympian/web/` — the interface (plain HTML/CSS/JS, no build step) and its texts (`i18n/en.json`, `i18n/es.json`, `i18n/ru.json`).
 - Most tests run against copies of real saves in `tests/fixture/`. Saves are personal, so they are **not** in this repository; put copies of your own save folder there to run the full suite (tests that need them are skipped otherwise).
 
 Bug reports are welcome in [Issues](../../issues): please attach `olympian_log.txt` and say what you did.

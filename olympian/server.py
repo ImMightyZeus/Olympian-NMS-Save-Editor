@@ -14,19 +14,29 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .core import gamedata, hgfile, inventories, jsonedit, jsonview, missions, ops, overview, safety, seedlog, settlements, ships
+from .core import autosort, gamedata, hgfile, imported, inventories, jsonedit, jsonview, missions, ops, overview, safety, seedlog, settlements, ships
 from .core.lock import Lock
 from .core.coords import Address, galaxies, GLYPHS
 from .core.savefile import SaveFolder, default_roots, files_of_slot, file_names
 from .core.session import Session
 
-VERSION = '0.9.0'
+VERSION = '0.10.0'
 WEB = Path(__file__).resolve().parent / 'web'
 PLAN_TTL = 15 * 60
 
 
+def app_data_dir() -> Path:
+    """Where Olympian keeps its own files: %APPDATA% on Windows, ~/Library/Application Support on macOS,
+    $XDG_CONFIG_HOME (or ~/.config) on Linux."""
+    if os.environ.get('APPDATA'):
+        return Path(os.environ['APPDATA'])
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support'
+    return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+
+
 def settings_path() -> Path:
-    base = Path(os.environ.get('APPDATA') or str(Path.home()))
+    base = app_data_dir()
     p = base / 'OlympianNMS'
     p.mkdir(parents=True, exist_ok=True)
     legacy = base / 'ZeusNMS' / 'settings.json'          # settings of versions up to 0.7.0
@@ -61,6 +71,7 @@ class App:
         self.stopping = False
         self.lock = threading.RLock()
         self.migrated: set[str] = set()
+        self.workspace: str | None = None      # id of the imported save being viewed or edited
         self.applock = Lock(settings_path().with_name('lock.json'))
         self.unlocked = not self.applock.enabled
         self.recovered = False                 # unlocked with a recovery code (lock must be set up again)
@@ -126,6 +137,8 @@ class App:
 
     # -- folder ------------------------------------------------------------------------------
     def folder(self) -> SaveFolder:
+        if self.workspace:
+            return SaveFolder(imported.folder_of(settings_path().parent, self.workspace))
         p = self.settings.get('folder')
         if not p:
             roots = default_roots()
@@ -150,8 +163,8 @@ class App:
         """Language of the game's sentences (advice, objectives): the interface language, keeping the
         Spanish variant chosen for game terms. Names keep following term_lang."""
         term = self.settings.get('term_lang') or 'es'
-        if self.settings.get('ui_lang') == 'en':
-            return 'en'
+        if self.settings.get('ui_lang') in ('en', 'ru'):
+            return self.settings['ui_lang']
         return term if term.startswith('es') else 'es'
 
     def _session(self) -> Session:
@@ -193,15 +206,15 @@ class App:
                     'game_running': safety.game_running(), 'lz4': hgfile.HAVE_LZ4,
                     'session': self.session.slot if self.session else None, 'lock': self._lock_state(),
                     'settings': {k: self.settings.get(k) for k in ('ui_lang', 'term_lang', 'lang_chosen', 'backup_extra',
-                                                                'allow_unprotected', 'lock_offered')}}
+                                                                'allow_unprotected', 'lock_offered', 'shield_sort_seen')}}
         if route == '/api/settings' and method == 'POST':
-            if body.get('ui_lang') in ('es', 'en'):
+            if body.get('ui_lang') in ('es', 'en', 'ru'):
                 self.settings['ui_lang'] = body['ui_lang']
             if body.get('term_lang') in gamedata.LANGS:
                 self.settings['term_lang'] = body['term_lang']
             if body.get('lang_chosen'):
                 self.settings['lang_chosen'] = True
-            for key in ('allow_unprotected', 'lock_offered'):
+            for key in ('allow_unprotected', 'lock_offered', 'shield_sort_seen'):
                 if key in body:
                     self.settings[key] = bool(body.get(key))
             if 'backup_extra' in body:
@@ -230,9 +243,10 @@ class App:
             lang = self.settings.get('term_lang') or 'es'
             if lang not in gamedata.LANGS:
                 lang = 'es'
-            alt = 'en' if lang.startswith('es') else 'es'      # search finds items in both languages
+            alt = 'es' if lang == 'en' else 'en'               # search also finds items in a second language
             return {'status': gamedata.status(self.settings.get('game_dir')), 'lang': lang,
-                    'names': gamedata.names(lang), 'names_alt': gamedata.names(alt), 'tips': gamedata.tips(lang)}
+                    'names': gamedata.names(lang), 'names_alt': gamedata.names(alt), 'tips': gamedata.tips(lang),
+                    'stats': gamedata.stat_labels(lang)}
         if route == '/api/galaxies':
             return {'galaxies': galaxies(), 'glyphs': GLYPHS}
         if route == '/api/slots':
@@ -267,6 +281,10 @@ class App:
         # -- editing session ----------------------------------------------------------------
         if route == '/api/session/open' and method == 'POST':
             slot = int(body['slot'])
+            if self.workspace:                                 # back to the player's own saves
+                if self.session and self.session.dirty:
+                    raise PermissionError('session_dirty')
+                self.workspace, self.session = None, None
             if self.session and self.session.dirty and self.session.slot != slot:
                 raise PermissionError('session_dirty')
             if not (self.session and self.session.slot == slot):
@@ -309,6 +327,12 @@ class App:
             settlements.learn_history([base / safety.BACKUP_DIR, base / safety.POINTS_DIR] +
                                       ([ex / safety.BACKUP_DIR, ex / safety.POINTS_DIR] if ex else []))
             return settlements.describe(sess.views(), self.settings.get('term_lang') or 'es', self.text_lang())
+        if route == '/api/session/autosort' and method == 'POST':
+            v = self._session().views()[0]
+            grid, valid, bsv, cid = autosort.from_save(v, int(body.get('ship', -1)))
+            r = autosort.plan(grid, valid, [str(p) for p in body.get('priorities') or []], bsv)
+            r['inv'] = cid
+            return r
         if route == '/api/session/addable' and method == 'POST':
             return inventories.addable(self._session().views(), str(body.get('inv') or ''))
         if route == '/api/session/inventories':
@@ -318,11 +342,20 @@ class App:
         if route == '/api/session/discard' and method == 'POST':
             self._session().reload()
             return self._describe()
+        if route in ('/api/session/undo', '/api/session/redo') and method == 'POST':
+            sess = self._session()
+            (sess.undo if route.endswith('undo') else sess.redo)()
+            return self._describe()
         if route == '/api/session/close' and method == 'POST':
             if self.session and self.session.dirty:
                 raise PermissionError('session_dirty')
             self.session = None
+            self.workspace = None
             return {'ok': True}
+
+        # -- imported saves (other players'), kept apart from the player's own ---------------
+        if route.startswith('/api/imported'):
+            return self._imported(route, body)
         if route == '/api/session/save_plan' and method == 'POST':
             plan = self._session().save_plan()
             self._keep(plan)
@@ -387,7 +420,49 @@ class App:
     def _describe(self) -> dict:
         d = self.session.describe()
         d['changelog'] = ops.slot_changelog(self.folder().path, self.session.slot)
+        d['imported'] = imported.info(settings_path().parent, self.workspace) if self.workspace else None
         return d
+
+    def _imported(self, route: str, body: dict):
+        base = settings_path().parent
+        if route == '/api/imported':
+            return {'items': imported.listing(base), 'xbox_export': False}
+        if route == '/api/imported/scan':
+            return imported.scan(str(body.get('path') or ''))
+        if route == '/api/imported/add':
+            return imported.do_import(base, str(body.get('path') or ''), int(body.get('slot') or 1),
+                                      str(body.get('label') or ''), bool(body.get('readonly')))
+        rid = str(body.get('id') or '')
+        if route == '/api/imported/open':
+            if self.session and self.session.dirty:
+                raise PermissionError('session_dirty')
+            i = imported.info(base, rid)
+            self.workspace = rid
+            self.session = Session(self.folder(), 1, imported=True, readonly=bool(i.get('readonly')))
+            return self._describe()
+        if route == '/api/imported/readonly':
+            if self.workspace == rid and self.session and self.session.dirty:
+                raise PermissionError('session_dirty')
+            i = imported.set_readonly(base, rid, bool(body.get('readonly')))
+            if self.workspace == rid and self.session:
+                self.session.readonly = bool(i['readonly'])
+            return i
+        if route == '/api/imported/remove':
+            if self.workspace == rid:
+                raise PermissionError('import_open')
+            imported.remove(base, rid)
+            return {'ok': True}
+        if route == '/api/imported/export':
+            if self.workspace == rid and self.session and self.session.dirty:
+                raise PermissionError('session_dirty')
+            if (body.get('format') or 'steam') == 'xbox':       # back into the Game Pass folder it came from
+                if body.get('mode') == 'apply':
+                    return imported.export_xbox(base, rid, safety.game_running())
+                return imported.xbox_preview(base, rid, safety.game_running())
+            own = self.settings.get('folder') or (str(default_roots()[0]) if default_roots() else None)
+            return imported.export_steam(base, rid, str(body.get('dest') or ''), int(body.get('slot') or 1), own,
+                                         self.settings.get('ui_lang') or 'es')
+        raise LookupError(route)
 
     def _keep(self, plan: ops.Plan):
         now = time.time()
@@ -399,6 +474,10 @@ class App:
         f = self.folder()
         a = body.get('action')
         p = body.get('params', {})
+        if self.workspace and a in ('copy_slot', 'restore_to', 'delete_slot', 'ship_transfer'):
+            raise PermissionError('import_own_only')      # never mix another player's save with the player's own
+        if self.workspace and self.session and self.session.readonly:
+            raise PermissionError('import_readonly')
         if a in ('set_primary', 'travel', 'rename', 'reorder', 'ship', 'inv', 'mis', 'settle', 'json', 'revert'):   # staged
             s = self._session()
             views = s.views()

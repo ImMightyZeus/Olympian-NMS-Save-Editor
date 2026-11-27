@@ -42,9 +42,10 @@ EMPTY_SHIP = (b'{"NKm":"","NTx":{"93M":"","@EL":[false,"0x0"],"<d2":{"bnT":[]},"
 SC_MAX = {'C': 1, 'B': 2, 'A': 3, 'S': 4}   # supercharged slots per class (patch 4.05)
 
 ALLOWED = {
-    'regular':  {'rename', 'repair', 'unlock', 'expand', 'recharge', 'duplicate', 'delete', 'seed', 'copy_tech', 'move'},
-    'living':   {'rename', 'repair', 'unlock', 'recharge', 'duplicate', 'delete', 'seed', 'move'},
-    'corvette': {'rename', 'repair', 'recharge', 'move'},
+    'regular':  {'rename', 'repair', 'unlock', 'expand', 'recharge', 'duplicate', 'delete', 'seed', 'copy_tech',
+                 'fix_tech', 'move'},
+    'living':   {'rename', 'repair', 'unlock', 'recharge', 'duplicate', 'delete', 'seed', 'fix_tech', 'move'},
+    'corvette': {'rename', 'repair', 'unlock', 'expand', 'recharge', 'move', 'delete'},
 }
 
 
@@ -56,6 +57,83 @@ def family(item_id: str) -> str:
     """'^UP_HYP4#02507' -> 'UP_HYP'; '^SHIPGUN_ROBO' -> 'SHIPGUN_ROBO' (one module of each kind)."""
     i = item_id.lstrip('^').split('#')[0]
     return re.sub(r'(\d|X)$', '', i) if i.startswith('UP_') else i
+
+
+# Which technology a ship can hold, by the game's TechnologyCategory. Sentinel interceptors use their own
+# core technology (RobotShip) and cannot take the standard core (Ship); living ships only take AlienShip and
+# AllShips. Checked against the user's ships (27/nov): no interceptor holds a Ship technology.
+_FLAVOR = {'interceptor': 'robot', 'living': 'alien'}
+_TECH_OK = {'std': {'Ship', 'AllShips', 'AllShipsExceptAlien'},
+            'robot': {'RobotShip', 'AllShips', 'AllShipsExceptAlien'},
+            'alien': {'AlienShip', 'AllShips'}}
+# the same technology for each kind of ship: (standard, sentinel, living); None = that kind has none
+_EQUIV = [('SHIPJUMP1', 'SHIPJUMP_ROBO', 'SHIPJUMP_ALIEN'), ('LAUNCHER', 'LAUNCHER_ROBO', 'LAUNCHER_ALIEN'),
+          ('HYPERDRIVE', 'HYPERDRIVE_ROBO', 'WARP_ALIEN'), ('SHIPSHIELD', 'SHIPSHIELD_ROBO', 'SHIELD_ALIEN'),
+          ('SHIPGUN1', 'SHIPGUN_ROBO', 'SHIPGUN_ALIEN'), ('SHIPLAS1', 'SHIPLAS1', 'SHIPLAS_ALIEN')]
+# the sentinel's Pilot Interface (LIFESUP_ROBO) and the Pressurisation Capsule (SHIP_LIFESUP) are not the same
+# part (the capsule is for unconventional cockpits), so neither stands in for the other
+_COL = {'std': 0, 'robot': 1, 'alien': 2}
+
+
+def tech_flavor(t: str) -> str | None:
+    """'std' / 'robot' / 'alien' for a ship type; None for corvettes (their technology is their own)."""
+    return None if t == 'corvette' else _FLAVOR.get(t, 'std')
+
+
+def tech_ok(item_id: str, fl: str | None) -> bool:
+    """False only when the game data says this ship kind cannot hold it (unknown items are left alone)."""
+    c = gamedata.tech_cat(item_id)
+    return fl is None or c is None or c in _TECH_OK[fl]
+
+
+def tech_equivalent(item_id: str, fl: str) -> str | None:
+    """The id this ship kind uses for the same technology ('^SHIPGUN_ROBO' -> '^SHIPGUN1' on an exotic), keeping
+    an upgrade's seed ('^UA_HYP3#123' <-> '^UP_HYP3#123'); None when it has no counterpart."""
+    base, _, seed = (item_id or '').lstrip('^').partition('#')
+    cand = None
+    for g in _EQUIV:
+        if base in g:
+            cand = g[_COL[fl]]
+            break
+    if cand is None and base.startswith('UA_') and fl != 'alien':
+        cand = 'UP_' + base[3:]
+    elif cand is None and base.startswith('UP_') and fl == 'alien':
+        cand = 'UA_' + base[3:]
+    if not cand or not gamedata.item(cand):
+        return None
+    new = '^' + cand + ('#' + seed if seed else '')
+    return new if tech_ok(new, fl) else None
+
+
+def tech_plan(ids: list[str], fl: str | None, have: set | None = None) -> list:
+    """For technology this ship kind cannot hold: [(index, new_id or None)] - the equivalent in place, or None to
+    take it out (no equivalent, or the ship already has that technology). `have`: families already present."""
+    if fl is None:
+        return []
+    have = set(have if have is not None else (family(i) for i in ids if tech_ok(i, fl)))
+    out = []
+    for j, i in enumerate(ids):
+        if tech_ok(i, fl):
+            continue
+        e = tech_equivalent(i, fl)
+        if e and family(e) not in have:
+            have.add(family(e))
+            out.append((j, e))
+        else:
+            out.append((j, None))
+    return out
+
+
+def _retech(el: bytes, it: dict, new_id: str, k) -> tuple[bytes, dict]:
+    """One technology element with another id; charge set the way the game installs it (full, or -1/100)."""
+    info = gamedata.item(new_id) or {}
+    amt, mx = (int(info.get('charge_amount') or 100),) * 2 if info.get('charge') else (-1, 100)
+    o = copy.deepcopy(it)
+    o[k.s('Id')], o[k.s('Amount')], o[k.s('MaxAmount')] = new_id, amt, mx
+    for key, val in (('Id', jspan.dumps_value(new_id)), ('Amount', b'%d' % amt), ('MaxAmount', b'%d' % mx)):
+        cs, ce = jspan.get(el, [k(key)])
+        el = el[:cs] + val + el[ce:]
+    return el, o
 
 
 def sc_shape(cells) -> dict:
@@ -219,6 +297,7 @@ def summary(ship: dict, k) -> dict:
     out['sc_max'] = SC_MAX.get(out['Inventory_TechOnly']['cls'], 4)
     out['sc_fixed'] = _sc_fixed(ship, k)
     out['modules'] = [x[k.s('Id')] for x in ship[k.s('Inventory_TechOnly')][k.s('Slots')]]
+    out['bad_tech'] = [[out['modules'][j], e] for j, e in tech_plan(out['modules'], tech_flavor(t))]
     out['cargo_items'] = [[x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')], x[k.s('Id')],
                            x[k.s('Amount')], x[k.s('MaxAmount')], x[k.s('Type')][k.s('InventoryType')],
                            gamedata.resolve(x[k.s('Id')]), _group(x[k.s('Id')], x[k.s('Type')][k.s('InventoryType')]),
@@ -229,7 +308,55 @@ def summary(ship: dict, k) -> dict:
                           gamedata.resolve(x[k.s('Id')]), _damaged(x, k), _rechargeable(x, k),
                           None if _damaged(x, k) else gamedata.adj_group(x[k.s('Id')])]
                          for x in ship[k.s('Inventory_TechOnly')][k.s('Slots')]]
+    out['tech_vals'], out['real'], out['tech_sums'] = _real_values(ship, k)
     return out
+
+
+# Olympian ship type -> the game's ship class, which picks the control set behind Manoeuvrability
+_SHIP_CLASS = {'fighter': 'Fighter', 'hauler': 'Dropship', 'explorer': 'Scientific', 'shuttle': 'Shuttle',
+               'exotic': 'Royal', 'living': 'Alien', 'solar': 'Sail', 'interceptor': 'Robot', 'corvette': 'Corvette'}
+
+
+def _real_values(ship: dict, k) -> tuple[dict, dict, list]:
+    """Exact values of each procedural upgrade as the game's tooltip shows them, and the ship screen values
+    (Damage Potential, Shield Strength, Hyperdrive Range, Manoeuvrability). Empty when the game data lacks the roll tables."""
+    from . import techstats
+    if not techstats.rules():
+        return {}, {}, []
+    inv = ship[k.s('Inventory_TechOnly')]
+    cells, damaged = {}, set()
+    for x in inv[k.s('Slots')]:
+        xy = (x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')])
+        cells[xy] = str(x[k.s('Id')] or '').lstrip('^')
+        if _damaged(x, k):
+            damaged.add(xy)
+    sc = {(c[k.s('Index')][k.s('X')], c[k.s('Index')][k.s('Y')]) for c in _supercharged(inv, k)}
+    try:
+        grid = techstats.Grid(cells, sc, damaged)
+        vals = {f'{x},{y}': techstats.tooltip(grid, (x, y)) for (x, y), i in cells.items()
+                if (gamedata.item(techstats.split_id(i)[0]) or {}).get('k') == 'proc'}
+        bsv = {str(b.get(k.s('BaseStatID'))): float(b.get(k.s('Value')) or 0)
+               for b in ship[k.s('Inventory')].get(k.s('BaseStatValues')) or [] if isinstance(b, dict)}
+        real = {n: round(v, 1) for n, v in techstats.ship_display(grid, bsv).items()}
+        res = ship.get(k.s('Resource')) or {}
+        sd = res.get(k.s('Seed')) or [False, '0x0']
+        seed = int(str(sd[1]), 16) if sd and sd[0] else None
+        cls = str((ship[k.s('Inventory')].get(k.s('Class')) or {}).get(k.s('InventoryClass')) or 'C')
+        kind = _SHIP_CLASS.get(ship_type(str(res.get(k.s('Filename')) or '')), 'Shuttle')
+        # corvettes: shield and hyperdrive match the game (user's two corvettes, 25/nov); damage potential and
+        # manoeuvrability do not yet (they likely count the corvette's built parts), so they are left out
+        corvette = kind == 'Corvette'
+        d = None if corvette else techstats.damage_potential(grid, bsv, seed)
+        m = None if corvette else techstats.manoeuvrability(grid, bsv, kind, cls, seed)
+        if d is not None:
+            real['damage'] = round(d, 1)
+        if m is not None:
+            real['agile'] = round(m, 1)
+        real['bonus'] = techstats.bonus_totals(grid)
+        sums = techstats.family_totals(grid, bsv)
+    except Exception:                       # never break the ship card over the extra values
+        return {}, {}, []
+    return {c: v for c, v in vals.items() if v}, real, sums
 
 
 # ------------------------------------------------------------------------------- helpers -------
@@ -287,6 +414,24 @@ class ShipEdit:
         self.edits: list[tuple[int, int, bytes]] = []
         self.legacy_edit = None
         self.expected_legacy = None
+        self.base_edit = None            # (start, end, b'') removing one PersistentPlayerBases entry
+        self.expected_bases = None
+
+    def remove_base(self, j: int):
+        """Remove PersistentPlayerBases[j] (a corvette's PlayerShipBase), comma included, like the game does."""
+        k = self.k
+        s, _ = self.idx.get(k.psd + [k('PersistentPlayerBases')])
+        items = jspan.arr_items(self.b, s)
+        if j < len(items) - 1:
+            a, z = items[j][0], items[j + 1][0]
+        elif j > 0:
+            a, z = items[j - 1][1], items[j][1]
+        else:
+            a, z = items[j]
+        self.base_edit = (a, z, b'')
+        exp = list(self.f.psd()[k.s('PersistentPlayerBases')])
+        del exp[j]
+        self.expected_bases = exp
 
     def patched_json(self):
         """The old parsed document with only the touched ships (and legacy list) replaced."""
@@ -303,6 +448,8 @@ class ShipEdit:
         psd[k.s('ShipOwnership')] = ships
         if self.expected_legacy is not None:
             psd[k.s('ShipUsesLegacyColours')] = self.expected_legacy
+        if self.expected_bases is not None:
+            psd[k.s('PersistentPlayerBases')] = self.expected_bases
         bc[k.s('PlayerStateData')] = psd
         j2[k.s('BaseContext')] = bc
         return j2
@@ -322,6 +469,8 @@ class ShipEdit:
         edits = list(self.edits)
         if self.legacy_edit:
             edits.append(self.legacy_edit)
+        if self.base_edit:
+            edits.append(self.base_edit)
         ed = sorted(edits, key=lambda t: t[0], reverse=True)
         for x, y in zip(ed, ed[1:]):
             if y[1] > x[0]:
@@ -337,6 +486,13 @@ class ShipEdit:
         delta = len(new) - len(self.b)
         if new[:lo] != self.b[:lo] or new[hi_old + delta:] != self.b[hi_old:]:
             raise RuntimeError('ship_verify_outside')
+        if self.base_edit:              # far from the ships: every byte between the edits must be untouched
+            shift, prev_end = 0, 0
+            for s1, e1, r1 in sorted(ed):
+                if new[prev_end + shift:s1 + shift] != self.b[prev_end:s1]:
+                    raise RuntimeError('ship_verify_outside')
+                shift += len(r1) - (e1 - s1)
+                prev_end = e1
         # reuse the shifted index of the old document instead of re-walking PlayerStateData
         jspan.carry_index(self.b, new, ed)
         nidx = jspan.index_for(new)
@@ -358,6 +514,10 @@ class ShipEdit:
         if self.expected_legacy is not None:
             ls, le = nidx.get(k.psd + [k('ShipUsesLegacyColours')])
             if jspan.loads(new[ls:le]) != self.expected_legacy:
+                raise RuntimeError('ship_verify')
+        if self.expected_bases is not None:
+            bs, be = nidx.get(k.psd + [k('PersistentPlayerBases')])
+            if jspan.loads(new[bs:be]) != self.expected_bases:
                 raise RuntimeError('ship_verify')
         return new
 
@@ -452,9 +612,8 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
                 plan.messages.append(msg('ok', 'ship_repair_nothing'))
 
         elif action == 'unlock':                     # cells inside the current grid that are still closed
-            if kind == 'corvette':
-                plan.messages.append(msg('info', 'ship_corvette_grid'))
-                return plan
+            # corvettes too: the game opens them inside the same grid with storage augmentations, as for any
+            # ship (user's corvette, 25/nov: 28 -> 33 cargo and 25 -> 29 technology cells, size unchanged)
             opened = 0
             for g in GRIDS:
                 inv = ships[ship][k.s(g)]
@@ -471,6 +630,8 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
                 plan.messages.append(msg('ok', 'ship_unlock_nothing'))
 
         elif action == 'expand':
+            # corvettes too: the game grows their grids up to the same S-class maximum as any ship (user's
+            # corvettes, 25/nov: cargo 8x5 -> 10x5 -> 10x6 while buying slots, the other one already 10x12; tech 10x6)
             cls = ships[ship][k.s('Inventory')][k.s('Class')][k.s('InventoryClass')]
             if cls != 'S':
                 plan.messages.append(msg('block', 'ship_expand_class', cls=cls, **label))
@@ -545,12 +706,17 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
             refs = []
             if p.get(k.s('PrimaryShip')) == ship:
                 refs.append('primary')
-            if p.get(k.s('CorvetteEditAssociatedShipIndex')) == ship:
+            # a corvette goes with its PlayerShipBase, and the game leaves the corvette editor's index as it was
+            # (seen in the user's slot 6, 23/nov: two corvettes disposed of in the game)
+            if p.get(k.s('CorvetteEditAssociatedShipIndex')) == ship and kind != 'corvette':
                 refs.append('corvette_edit')
-            for base in p.get(k.s('PersistentPlayerBases'), []):
-                if base.get(k.s('BaseType'), {}).get(k.s('PersistentBaseTypes')) == 'PlayerShipBase' \
-                        and base.get(k.s('UserData')) == ship:
-                    refs.append('corvette_base')
+            cbases = [j for j, base in enumerate(p.get(k.s('PersistentPlayerBases'), []))
+                      if base.get(k.s('BaseType'), {}).get(k.s('PersistentBaseTypes')) == 'PlayerShipBase'
+                      and base.get(k.s('UserData')) == ship]
+            if cbases and kind != 'corvette':
+                refs.append('corvette_base')
+            if kind == 'corvette' and len(cbases) > 1:
+                refs.append('corvette_bases')
             if refs:
                 for r in dict.fromkeys(refs):
                     plan.messages.append(msg('block', 'ship_in_use_' + r, **label))
@@ -564,7 +730,16 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
             se.edits.append((se.items[ship][0], se.items[ship][1], EMPTY_SHIP))
             se.expected[ship] = jspan.loads(EMPTY_SHIP)
             _legacy(se, ship, None)
-            plan.messages.append(msg('danger', 'ship_delete_what', file=fname, **label))
+            if kind == 'corvette':
+                if cbases:
+                    se.remove_base(cbases[0])
+                    nobj = len(p[k.s('PersistentPlayerBases')][cbases[0]].get(k.s('Objects')) or [])
+                    plan.messages.append(msg('danger', 'ship_corvette_delete_what', file=fname, parts=nobj, **label))
+                else:
+                    plan.messages.append(msg('danger', 'ship_delete_what', file=fname, **label))
+                plan.messages.append(msg('warn', 'ship_corvette_delete_parts'))
+            else:
+                plan.messages.append(msg('danger', 'ship_delete_what', file=fname, **label))
             plan.messages.append(msg('ok', 'ship_delete_others'))
 
         elif action == 'copy_tech':
@@ -579,15 +754,25 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
             src_inv, dst_inv = ships[src_i][k.s(g)], ships[ship][k.s(g)]
             W, H = dst_inv[k.s('Width')], dst_inv[k.s('Height')]
             valid = {(c[k.s('X')], c[k.s('Y')]) for c in dst_inv[k.s('ValidSlotIndices')]}
-            src_items = src_inv[k.s('Slots')]
+            sa = jspan.arr_items(se.b, se.ships_span[0])[src_i][0]
+            ss, _ = jspan.get(se.b, [k(g), k('Slots')], sa)
+            src_items = list(src_inv[k.s('Slots')])
+            src_bytes = [se.b[a:z] for a, z in jspan.arr_items(se.b, ss)]
+            # only what this ship kind can hold: sentinel/living technology becomes its equivalent, or stays out
+            fix = dict(tech_plan([x[k.s('Id')] for x in src_items], tech_flavor(t)))
+            swapped, left = [], []
+            for j in sorted(fix, reverse=True):
+                if fix[j]:
+                    swapped.append((src_items[j][k.s('Id')], fix[j]))
+                    src_bytes[j], src_items[j] = _retech(src_bytes[j], src_items[j], fix[j], k)
+                else:
+                    left.append(src_items[j][k.s('Id')])
+                    del src_bytes[j], src_items[j]
             src_cells = {(x[k.s('Index')][k.s('X')], x[k.s('Index')][k.s('Y')]) for x in src_items}
             if not src_cells <= valid:
                 plan.messages.append(msg('block', 'ship_copy_grid', need=len(src_cells), have=len(valid), **label))
                 return plan
             src_fams = {family(x[k.s('Id')]) for x in src_items}
-            sa = jspan.arr_items(se.b, se.ships_span[0])[src_i][0]
-            ss, _ = jspan.get(se.b, [k(g), k('Slots')], sa)
-            src_bytes = [se.b[a:z] for a, z in jspan.arr_items(se.b, ss)]
             free = [c for c in sorted(valid, key=lambda c: (c[1], c[0])) if c not in src_cells]
             ts, te = se.span([k(g), k('Slots')])
             keep_b, keep_o, dropped = [], [], []
@@ -611,7 +796,39 @@ def plan_ship(folder: SaveFolder, slot: int, ship: int, action: str, params: dic
             plan.messages.append(msg('info', 'ship_copy_what', file=fname, n_items=len(src_items),
                                      src=ships[src_i].get(k.s('Name')) or str(src_i + 1),
                                      kept=len(keep_o), replaced=len(dropped), **label))
+            if swapped:
+                plan.messages.append(msg('warn', 'ship_copy_swapped', count=len(swapped),
+                                         pairs=[list(x) for x in reversed(swapped)]))
+            if left:
+                plan.messages.append(msg('warn', 'ship_copy_left', count=len(left), ids=list(reversed(left))))
             plan.messages.append(msg('warn', 'ship_copy_super'))
+        elif action == 'fix_tech':                   # technology this ship kind cannot hold (e.g. copied from a sentinel)
+            g = 'Inventory_TechOnly'
+            items = ships[ship][k.s(g)][k.s('Slots')]
+            fix = dict(tech_plan([x[k.s('Id')] for x in items], tech_flavor(t)))
+            if not fix:
+                plan.messages.append(msg('block', 'ship_fix_tech_none', **label))
+                return plan
+            ts, te = se.span([k(g), k('Slots')])
+            els, objs, swapped, left = [], [], [], []
+            for j, (a, z) in enumerate(jspan.arr_items(se.b, ts)):
+                el, it = se.b[a:z], items[j]
+                if j in fix and fix[j]:
+                    swapped.append((it[k.s('Id')], fix[j]))
+                    el, it = _retech(el, it, fix[j], k)
+                elif j in fix:
+                    left.append(it[k.s('Id')])
+                    continue
+                els.append(el)
+                objs.append(copy.deepcopy(it))
+            se.replace((ts, te), b'[' + b','.join(els) + b']')
+            exp[k.s(g)][k.s('Slots')] = objs
+            plan.messages.append(msg('info', 'ship_fix_tech_what', file=fname, count=len(swapped) + len(left), **label))
+            if swapped:
+                plan.messages.append(msg('ok', 'ship_copy_swapped', count=len(swapped),
+                                         pairs=[list(x) for x in swapped]))
+            if left:
+                plan.messages.append(msg('warn', 'ship_fix_tech_removed', count=len(left), ids=left))
         elif action == 'move':
             g = {'tech': 'Inventory_TechOnly', 'cargo': 'Inventory'}.get(params.get('grid'))
             try:

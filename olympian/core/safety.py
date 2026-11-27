@@ -23,15 +23,33 @@ EXTRA: Path | None = None              # optional second location for every back
 
 
 def game_running() -> bool | None:
-    """True/False on Windows; None when it cannot be determined (other OS)."""
-    if sys.platform != 'win32':
-        return None
+    """True/False when it can be checked; None when it cannot. Windows: tasklist. Linux (Proton, the game
+    runs as NMS.exe): /proc. macOS (native game): pgrep."""
     try:
-        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq NMS.exe', '/NH'], capture_output=True,
-                             text=True, timeout=10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
-        return 'nms.exe' in out.lower()
+        if sys.platform == 'win32':
+            out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq NMS.exe', '/NH'], capture_output=True,
+                                 text=True, timeout=10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+            return 'nms.exe' in out.lower()
+        if sys.platform.startswith('linux'):
+            proc = Path('/proc')
+            if not proc.is_dir():
+                return None
+            for d in proc.iterdir():
+                if not d.name.isdigit():
+                    continue
+                try:
+                    cmd = (d / 'cmdline').read_bytes().replace(b'\0', b' ').lower()
+                except OSError:
+                    continue
+                if b'nms.exe' in cmd and b'olympian' not in cmd:
+                    return True
+            return False
+        if sys.platform == 'darwin':
+            r = subprocess.run(['pgrep', '-if', "No Man's Sky"], capture_output=True, text=True, timeout=10)
+            return r.returncode == 0
     except Exception:  # noqa: BLE001
         return None
+    return None
 
 
 def _stamp() -> str:

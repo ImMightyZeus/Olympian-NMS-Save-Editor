@@ -42,9 +42,10 @@
   </aside>
   <div class="editor-body">
     <header class="topbar">
-      <div><span class="muted" data-i18n="editor.editing"></span> <b id="editing-name"></b></div>
+      <div><span class="muted" data-i18n="editor.editing"></span> <b id="editing-name"></b> <span id="imp-badge"></span> <span id="alone-badge"></span></div>
       <div class="row">
         <button class="btn ibtn home" id="btn-home"><img src="/uiicon/home" alt="" draggable="false" onerror="this.replaceWith('⌂')"></button>
+        <button class="btn icon" id="btn-undo" disabled>↶</button><button class="btn icon" id="btn-redo" disabled>↷</button>
         <button class="btn" id="btn-discard" data-i18n="editor.discard"></button>
         <button class="btn primary" id="btn-save"></button>
         <select id="slot-switch" class="switch" title=""></select>

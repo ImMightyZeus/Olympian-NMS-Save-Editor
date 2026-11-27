@@ -15,9 +15,11 @@ from .savefile import SaveFile, SaveFolder, file_names
 
 
 class Session:
-    def __init__(self, folder: SaveFolder, slot: int):
+    def __init__(self, folder: SaveFolder, slot: int, *, imported: bool = False, readonly: bool = False):
         self.folder = folder
         self.slot = slot
+        self.imported = imported                # another player's save in the imported space (not the game's)
+        self.readonly = readonly
         self.reload()
 
     def reload(self):
@@ -26,6 +28,8 @@ class Session:
         self.names: dict[int, str | None] = {f.file_index: None for f in self.orig}
         self.parsed: dict[int, object] = {}     # parsed JSON matching self.work, when an action supplied it
         self.changes: list[dict] = []
+        self._undo: list[dict] = []            # state before each staged change (same order as self.changes)
+        self._redo: list[tuple[dict, dict]] = []   # (state after, change) of undone changes
         self._views: list[SaveFile] | None = None
         threading.Thread(target=self._warm, daemon=True).start()
 
@@ -61,16 +65,45 @@ class Session:
 
     def describe(self) -> dict:
         d = ops.describe_slot(self.folder, self.slot, self.views(), self.names)
-        d.update({'dirty': self.dirty, 'changes': self.changes})
+        d.update({'dirty': self.dirty, 'changes': self.changes,
+                  'can_undo': bool(self._undo), 'can_redo': bool(self._redo)})
         return d
+
+    # -- undo / redo, one staged change at a time ------------------------------------------------
+    def _state(self) -> dict:
+        return {'work': dict(self.work), 'names': dict(self.names), 'parsed': dict(self.parsed)}
+
+    def _restore(self, st: dict):
+        self.work, self.names, self.parsed = dict(st['work']), dict(st['names']), dict(st['parsed'])
+        self._views = None
+
+    def undo(self) -> bool:
+        if not self._undo or not self.changes:
+            return False
+        self._redo.append((self._state(), self.changes.pop()))
+        self._restore(self._undo.pop())
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo:
+            return False
+        after, change = self._redo.pop()
+        self._undo.append(self._state())
+        self._restore(after)
+        self.changes.append(change)
+        return True
 
     # -- staging -----------------------------------------------------------------------------
     def stage(self, plan: ops.Plan) -> dict:
+        if self.readonly:
+            raise PermissionError('import_readonly')
         if plan.blocked:
             raise PermissionError('blocked')
         for c in plan.changes:
             if c.target_index not in self.work:
                 raise ValueError('not_in_session')
+        self._undo.append(self._state())
+        self._redo.clear()
         for c in plan.changes:
             self.work[c.target_index] = c.new_raw
             pj = getattr(c, 'json', None)

@@ -25,7 +25,9 @@ const catText = (grp, kind) => grp ? `${rawT('inv.category')}: ${rawT('inv.grp.'
 const itemIcon = (id, rid, extra = '') => { const r = realId(id, rid);
   return r ? `<img src="/icons/${encodeURIComponent(r)}" alt="" draggable="false" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'noico',textContent:'${esc(r).slice(0, 3)}'}))">${extra}`
     : `<span class="noico">✦</span>${extra}`; };
-const LANG_NAMES = { es: 'Español (Latinoamérica)', 'es-ES': 'Español (España)', en: 'English' };
+const LANG_NAMES = { es: 'Español (Latinoamérica)', 'es-ES': 'Español (España)', en: 'English', ru: 'Русский' };
+const UI_LANGS = { es: 'Español', en: 'English', ru: 'Русский' };
+const NUM_LOCALE = { es: 'es-ES', en: 'en-US', ru: 'ru-RU' };
 
 let busyN = 0, busyT = null;
 function busy(on) {
@@ -53,9 +55,9 @@ function toast(text, err = false) {
 }
 async function loadLang(ui, term) {
   S.dict = await fetch(`i18n/${ui}.json`).then(r => r.json());
-  const tf = String(term).startsWith('es') ? 'es' : 'en';
+  const tf = String(term).startsWith('es') ? 'es' : term === 'ru' ? 'ru' : 'en';
   S.terms = tf === ui ? S.dict : await fetch(`i18n/${tf}.json`).then(r => r.json());
-  try { const g = await api('/api/gamedata'); S.names = g.names || {}; S.namesAlt = g.names_alt || {}; S.tips = g.tips || {}; S.gd = g.status; } catch (_) { S.names = {}; S.namesAlt = {}; S.tips = {}; S.gd = null; }
+  try { const g = await api('/api/gamedata'); S.names = g.names || {}; S.namesAlt = g.names_alt || {}; S.tips = g.tips || {}; S.statNames = g.stats || {}; S.gd = g.status; } catch (_) { S.names = {}; S.namesAlt = {}; S.tips = {}; S.statNames = {}; S.gd = null; }
   document.documentElement.lang = ui;
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
 }
@@ -90,9 +92,12 @@ function shapeParams(p = {}) {
     if (k.startsWith('shape_')) o[k] = t('sc.' + o[k]);
     else if (k === 'when' && typeof o[k] === 'number') o[k] = fmtDate(o[k]);
     else if ((k === 'item' || k === 'other') && typeof o[k] === 'string') o[k] = itemName(o[k]);
-    else if (k === 'grid') o[k] = t('grid.' + o[k]);
+    else if (k === 'grid') o[k] = t('grid.' + ({ Inventory: 'cargo', Inventory_TechOnly: 'tech' }[o[k]] || o[k]));
     else if (k === 'charges' && Array.isArray(o[k])) o[k] = o[k].map(([id, cell, a, m]) => `${itemName(id)} (${cell}: ${a}/${m} → ${m})`).join(', ');
     else if (o[k] && typeof o[k] === 'object' && 'inv' in o[k]) o[k] = invLabel(o[k]);
+    else if (k === 'pairs' && Array.isArray(o[k])) o[k] = o[k].map(([a, b]) => `${itemName(a)} → ${itemName(b)}`).join(', ');
+    else if (k === 'ids' && Array.isArray(o[k])) o[k] = o[k].map(x => itemName(x)).join(', ');
+    else if (k === 'invs' && Array.isArray(o[k])) o[k] = o[k].map(x => invLabel(x)).join(', ');
     else if (k === 'level') o[k] = t('inv.level.' + o[k]);
     else if (k === 'group' && typeof o[k] === 'string') o[k] = t('inv.grp.' + o[k]);
     else if (k === 'key' && typeof o[k] === 'string') o[k] = t('inv.sort.' + o[k]);
@@ -118,13 +123,29 @@ function backupChanges(p) {
   return `<details class="bchanges"><summary>${t('start.changes_n', { n: ch.length })}</summary>
     <ul>${ch.map(x => `<li>${x}</li>`).join('')}</ul><div class="muted small">${t('start.changes_undo')}</div></details>`;
 }
-function statsHtml(st, compact) {
+function statsHtml(st) {                      // class bonuses, compact (ship list)
   if (!st || !Object.keys(st).length) return '';
   const order = ['damage', 'shield', 'hyperdrive', 'agile'];
-  if (compact) return `<span class="stats small">${order.filter(k => k in st).map(k => `<span title="${t('stat.' + k)}">${STAT_ICON[k]} ${st[k]}</span>`).join('')}</span>`;
-  return `<div class="statbox"><b>${t('stat.title')}</b>${order.filter(k => k in st).map(k => `
-    <div class="stat"><span>${t('stat.' + k)}</span><span class="bar"><i style="width:${Math.min(100, st[k])}%"></i></span><b>${st[k]}</b></div>`).join('')}
-    <span class="muted small">${t('stat.note')}</span></div>`;
+  return `<span class="stats small">${order.filter(k => k in st).map(k => `<span title="${t('stat.' + k)}">${STAT_ICON[k]} ${st[k]}</span>`).join('')}</span>`;
+}
+function realHtml(r) {
+  if (!r || !Object.keys(r).length) return '';
+  const f = v => (+v).toFixed(1);                // as the ship screen shows it: 1647.0
+  return `<div class="statbox real"><b>${t('real.title')}</b>${['damage', 'shield', 'hyperdrive', 'agile'].filter(k => k in r).map(k => `
+    <div class="stat" tabindex="0" title="${esc(realTip(k, r.bonus))}"><span>${STAT_ICON[k]} ${t('real.' + k)}</span><b>${f(r[k])}</b></div>`).join('')}
+    <span class="muted small">${t('real.note')} ${t('real.hint')}</span></div>`;
+}
+/* tooltip of each real value: what the installed technology behind it adds up to (upgrades + adjacency + supercharged) */
+const REAL_FAM = { damage: f => f.startsWith('Ship_Weapons'), shield: f => f.startsWith('Ship_Armour'),
+  hyperdrive: f => f.startsWith('Ship_Hyperdrive'), agile: f => f === 'Ship_PulseDrive' || f === 'Ship_Launcher' };
+const AGILE_STATS = new Set(['Ship_Maneuverability', 'Ship_BoostManeuverability', 'Ship_Boost']);
+function realTip(key, b) {
+  const secs = [];
+  for (const [fam, rows, base] of b || []) {
+    const mine = REAL_FAM[key](fam) ? rows : key === 'agile' ? rows.filter(x => AGILE_STATS.has(x[0])) : [];
+    if (mine.length) secs.push([base ? itemName(base) : statName(fam), ...mine.map(([st, k, v]) => `• ${statName(st)}: ${fmtVal(k, v)}`)].join('\n'));
+  }
+  return [rawT('real.' + key), ...(secs.length ? secs : [rawT('bonus.none')]), rawT('bonus.note')].join('\n\n');
 }
 const STAT_ICON = { damage: '⚔', shield: '🛡', hyperdrive: '⇢', agile: '↻' };
 function historyHtml(h) {
@@ -198,10 +219,10 @@ async function previewAndApply(action, params, after) {
 /* ------------------------------------------------------------------ idioma (centrado, dos listas) */
 function langModal(first) {
   const st = S.state.settings;
-  const opts = sel => `<option value="es" ${sel === 'es' ? 'selected' : ''}>Español</option><option value="en" ${sel === 'en' ? 'selected' : ''}>English</option>`;
+  const opts = sel => Object.entries(UI_LANGS).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v}</option>`).join('');
   const topts = sel => Object.entries(LANG_NAMES).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v}</option>`).join('');
   return new Promise(resolve => {
-    showModal('Idioma · Language', `<div class="stack">
+    showModal('Idioma · Language · Язык', `<div class="stack">
       <label>${t('settings.ui_lang')} · App language<select id="l-ui">${opts(st.ui_lang || 'es')}</select></label>
       <label>${t('settings.term_lang')} · Game content language<select id="l-term">${topts(st.term_lang || 'es')}</select></label>
       <p class="muted" style="margin:0">${t('settings.term_note')}</p></div>`, [
@@ -220,7 +241,10 @@ async function refreshState() {
   const run = S.state.game_running;
   const pill = `<span class="pill ${run ? 'bad' : run === false ? 'ok' : 'warn'}">● ${t(run ? 'status.game_running' : run === false ? 'status.game_closed' : 'status.game_unknown')}</span>`;
   $('#status').innerHTML = `${pill}<span>${t('status.folder')}:<br><code>${esc(S.state.folder || t('status.no_folder'))}</code></span><span>v${esc(S.state.version)}</span>`;
-  $('#start-status').innerHTML = pill;
+  const alone = S.state.settings && S.state.settings.allow_unprotected && !(S.state.lock || {}).enabled
+    ? `<span class="pill bad alonebadge" title="${esc(rawT('lock.alone_badge_tip'))}">⚠ ${t('lock.alone_badge')}</span>` : '';
+  $('#start-status').innerHTML = alone + pill;
+  $('#alone-badge').innerHTML = alone;
 }
 setInterval(() => api('/api/ping').catch(() => {}), 5000);
 setInterval(() => refreshState().catch(() => {}), 20000);
@@ -280,6 +304,141 @@ async function showStart() {
   main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => startAction(+b.closest('[data-slot]').dataset.slot, b.dataset.act));
   main.querySelectorAll('[data-restore]').forEach(b => b.onclick = () => restoreTo(b.dataset.restore));
   backupUsage($('#bk-usage'), showStart);
+  main.insertAdjacentHTML('beforeend', `<div id="imp-space"></div>`);
+  importedSection($('#imp-space'));
+}
+
+/* ---- other players' saves: a separate space (import, view or edit, export back in the owner's format) ---- */
+async function importedSection(box) {
+  let d;
+  try { d = await api('/api/imported'); } catch (e) { box.innerHTML = ''; return; }
+  S.imported = d;
+  const card = i => {
+    if (i.error) return `<div class="card impcard"><p class="msg warn"><span>${esc(i.id)}: ${esc(i.error)}</span></p></div>`;
+    const f = (i.summary && i.summary.files || [])[0] || {};
+    const ships = (f.ships || []).filter(x => x.model).length;
+    return `<div class="card impcard" data-imp="${esc(i.id)}">
+      <div class="row between"><h2>📥 ${esc(i.label || f.name || i.id)}</h2>
+        <span class="tag">${i.kind === 'xbox' ? 'Xbox / Game Pass' : 'Steam'} · ${t('common.slot')} ${i.slot}</span></div>
+      ${i.readonly ? `<p class="small"><span class="pill">🔒 ${t('imp.readonly')}</span></p>` : ''}
+      <div class="kv">
+        <span>${t('imp.save_name')}</span><span>${esc(f.name || '—')}</span>
+        ${f.address ? `<span>${t('slots.location')}</span><span>${esc(galLabel(f.galaxy))} · ${t('common.system')} ${f.address.system}</span>` : ''}
+        <span>${t('slots.ships')}</span><span>${ships}</span>
+        <span>${t('slots.playtime')}</span><span>${fmtHours(f.playtime)}</span>
+        <span>${t('imp.imported_at')}</span><span>${fmtDate(i.imported)}</span>
+      </div>
+      <div class="row">
+        <button class="btn primary" data-impact="open">${i.readonly ? t('imp.view') : t('imp.edit')}</button>
+        <button class="btn" data-impact="export">${t('imp.export')}</button>
+        <button class="btn" data-impact="ro">${i.readonly ? t('imp.allow_edit') : t('imp.make_ro')}</button>
+        <button class="btn danger" data-impact="remove">${t('imp.remove')}</button>
+      </div></div>`;
+  };
+  box.innerHTML = `<h2 style="margin-top:34px">${t('imp.title')}</h2><p class="help">${t('imp.help')}</p>
+    <div class="row"><button class="btn primary" id="imp-add">📥 ${t('imp.add')}</button></div>
+    <div class="grid" style="margin-top:12px">${d.items.map(card).join('') || `<p class="muted">${t('imp.none')}</p>`}</div>`;
+  $('#imp-add').onclick = importDialog;
+  box.querySelectorAll('[data-impact]').forEach(b => b.onclick = () => {
+    const id = b.closest('[data-imp]').dataset.imp, it = d.items.find(x => x.id === id);
+    ({ open: () => openImported(id), export: () => exportDialog(it), ro: () => toggleReadonly(it), remove: () => removeImported(it) })[b.dataset.impact]();
+  });
+}
+function importDialog() {
+  showModal(t('imp.add'), `<p class="help">${t('imp.add_help')}</p>
+    <label>${t('imp.path')}<input id="imp-path" placeholder="E:\\Descargas\\partida_de_mi_amigo"></label>
+    <div id="imp-found"></div>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    { label: t('imp.scan'), primary: true, onClick: scanImport }], true);
+  $('#imp-path').focus();
+}
+async function scanImport() {
+  const path = $('#imp-path').value.trim(), box = $('#imp-found');
+  if (!path) return;
+  box.innerHTML = `<p class="muted">${t('common.working')}</p>`;
+  let r;
+  try { r = await api('/api/imported/scan', { path }); } catch (e) { box.innerHTML = `<p class="msg block"><span>${errText(e)}</span></p>`; return; }
+  const opts = r.slots.map((sl, n) => { const f = (sl.files || [])[0] || {};
+    return `<label class="chk"><input type="radio" name="imp-slot" value="${sl.slot}" ${n ? '' : 'checked'}>
+      ${t('common.slot')} ${sl.slot} · ${esc(f.name || t('common.unnamed'))} · ${fmtHours(f.playtime)}</label>`; }).join('');
+  box.innerHTML = `<p class="msg info"><span>${t(r.kind === 'xbox' ? 'imp.found_xbox' : 'imp.found_steam', { n: r.slots.length })}</span></p>
+    <div class="stack">${opts}</div>
+    <label>${t('imp.label')}<input id="imp-label" maxlength="60" placeholder="${esc(rawT('imp.label_ph'))}"></label>
+    <label class="chk"><input type="checkbox" id="imp-ro"> ${t('imp.ro_check')}</label>
+    <p class="muted small">${t('imp.note')}</p>`;
+  $('#modal-actions').innerHTML = '';
+  const add = (label, cls, fn) => { const b = document.createElement('button'); b.className = 'btn ' + cls; b.textContent = label; b.onclick = fn; $('#modal-actions').appendChild(b); };
+  add(t('common.cancel'), '', closeModal);
+  add(t('imp.do_import'), 'primary', async () => {
+    const slot = +(document.querySelector('[name=imp-slot]:checked') || {}).value || 1;
+    try { await api('/api/imported/add', { path, slot, label: $('#imp-label').value, readonly: $('#imp-ro').checked }); }
+    catch (e) { return toast(errText(e), true); }
+    closeModal(); toast(t('imp.done')); showStart();
+  });
+}
+async function openImported(id) {
+  try { S.sess = await api('/api/imported/open', { id }); } catch (e) { return toast(errText(e), true); }
+  S.order = null; S.travel.galaxy = null; S.view = 'summary';
+  $('#start').hidden = true; $('#editor').hidden = false;
+  renderEditor();
+}
+async function toggleReadonly(it) {
+  try { await api('/api/imported/readonly', { id: it.id, readonly: !it.readonly }); } catch (e) { return toast(errText(e), true); }
+  showStart();
+}
+function removeImported(it) {
+  showModal(t('imp.remove'), `<p>${t('imp.remove_q', { name: esc(it.label || it.id) })}</p>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    { label: t('imp.remove'), danger: true, onClick: async () => {
+      try { await api('/api/imported/remove', { id: it.id }); } catch (e) { return toast(errText(e), true); }
+      closeModal(); showStart(); } }]);
+}
+function exportDialog(it) {
+  const canX = it.kind === 'xbox' && !!it.xbox;
+  showModal(t('imp.export'), `<p class="help">${t('imp.export_help')}</p>
+    <div class="stack">
+      <label class="chk"><input type="radio" name="imp-fmt" value="steam" checked> ${t('imp.fmt_steam')}</label>
+      <label class="chk"><input type="radio" name="imp-fmt" value="xbox" ${canX ? '' : 'disabled'}> ${t('imp.fmt_xbox')}</label>
+      <p class="muted small">${t(canX ? 'imp.xbox_help' : it.kind === 'xbox' ? 'imp.xbox_reimport' : 'imp.xbox_only')}</p>
+    </div>
+    <div id="exp-steam"><label>${t('imp.export_slot')}<input id="exp-slot" type="number" min="1" max="15" value="${it.kind === 'steam' ? it.slot : 1}"></label>
+    <label>${t('imp.export_dest')}<input id="exp-dest" placeholder="E:\\Descargas"></label>
+    <p class="muted small">${t('imp.export_note')}</p></div>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    { label: t('imp.export'), primary: true, onClick: async () => {
+      if ((document.querySelector('[name=imp-fmt]:checked') || {}).value === 'xbox') return xboxExport(it);
+      let r;
+      try { r = await api('/api/imported/export', { id: it.id, format: 'steam', slot: +$('#exp-slot').value, dest: $('#exp-dest').value }); }
+      catch (e) { return toast(errText(e), true); }
+      closeModal();
+      showModal(t('imp.exported'), `<p>${t('imp.exported_where', { folder: esc(r.folder) })}</p>
+        <p class="muted small">${esc(r.files.join(', '))}</p><p>${t('imp.exported_send')}</p>`, [{ label: t('common.close'), primary: true, onClick: closeModal }]);
+    } }], true);
+  document.querySelectorAll('[name=imp-fmt]').forEach(r => r.addEventListener('change', () => {
+    $('#exp-steam').hidden = r.value === 'xbox' && r.checked; }));
+}
+/* devolver la partida a la carpeta de Game Pass de la que vino: vista previa, luego escribir */
+async function xboxExport(it) {
+  let p;
+  try { p = await api('/api/imported/export', { id: it.id, format: 'xbox', mode: 'preview' }); }
+  catch (e) { return toast(errText(e), true); }
+  closeModal();
+  const probs = p.problems.map(c => `<p class="msg block"><span class="lv">${t('level.block')}</span><span>${t('err.' + c)}</span></p>`).join('');
+  const rows = p.writes.map(w => `<li><b>${esc(w.container)}</b> · ${fmtBytes(w.bytes)}</li>`).join('');
+  showModal(t('imp.xbox_title'), `<p>${t('imp.xbox_where', { folder: esc(p.root), slot: p.slot })}</p>
+    ${rows ? `<ul>${rows}</ul>` : ''}${probs}
+    ${p.game_unknown ? `<p class="msg warn"><span>${t('imp.xbox_game_unknown')}</span></p>` : ''}
+    <p class="muted small">${t('imp.xbox_steps')}</p>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    ...(p.problems.length ? [] : [{ label: t('imp.xbox_write'), primary: true, onClick: async () => {
+      let r;
+      try { r = await api('/api/imported/export', { id: it.id, format: 'xbox', mode: 'apply' }); }
+      catch (e) { return toast(errText(e), true); }
+      closeModal();
+      showModal(t('imp.xbox_done_title'), `<p>${t('imp.xbox_done', { folder: esc(r.root) })}</p>
+        <p class="muted small">${t('imp.xbox_backup', { folder: esc(r.backup) })}</p><p>${t('imp.xbox_after')}</p>`,
+        [{ label: t('common.close'), primary: true, onClick: closeModal }]);
+    } }])], true);
 }
 
 /* espacio que ocupan los respaldos y purga (se conservan siempre los más recientes) */
@@ -370,14 +529,21 @@ async function reloadSession() { S.sess = await api('/api/session'); S.order = n
 
 function renderTopbar() {
   const s = S.sess;
-  $('#editing-name').textContent = `${t('common.slot')} ${s.slot} · ${slotName(s)}`;
+  const imp = s.imported;
+  $('#editing-name').textContent = imp ? `📥 ${rawT('imp.badge')}: ${imp.label || slotName(s)}` : `${t('common.slot')} ${s.slot} · ${slotName(s)}`;
+  $('#imp-badge').innerHTML = imp ? `<span class="pill ${imp.readonly ? '' : 'warn'}">${imp.readonly ? '🔒 ' + t('imp.readonly') : t('imp.editing_other')}</span>` : '';
   $('#btn-home').title = rawT('editor.home_tip'); $('#btn-home').setAttribute('aria-label', rawT('editor.home_tip'));
   const save = $('#btn-save');
   save.textContent = s.dirty ? t('editor.save_n', { n: s.changes.length }) : t('editor.save');
   save.disabled = !s.dirty; $('#btn-discard').disabled = !s.dirty;
-  const others = S.slots.filter(x => x.files && x.slot !== s.slot)
+  const last = s.changes.length && s.changes[s.changes.length - 1].summary;
+  $('#btn-undo').disabled = !s.can_undo; $('#btn-redo').disabled = !s.can_redo;
+  $('#btn-undo').title = rawT('editor.undo') + (s.can_undo && last ? ': ' + rawT('msg.' + last.code, shapeParams(last.p)) : '');
+  $('#btn-redo').title = rawT('editor.redo');
+  $('#btn-undo').setAttribute('aria-label', rawT('editor.undo')); $('#btn-redo').setAttribute('aria-label', rawT('editor.redo'));
+  const others = S.slots.filter(x => x.files && (imp || x.slot !== s.slot))
     .map(x => `<option value="${x.slot}">${t('editor.switch_to', { slot: x.slot, name: esc(slotName(x)) })}</option>`).join('');
-  $('#slot-switch').innerHTML = `<option value="${s.slot}" selected>${t('common.slot')} ${s.slot} · ${esc(slotName(s))}</option>${others}
+  $('#slot-switch').innerHTML = `<option value="${imp ? 'imp' : s.slot}" selected>${imp ? '📥 ' + esc(imp.label || slotName(s)) : `${t('common.slot')} ${s.slot} · ${esc(slotName(s))}`}</option>${others}
     <option value="home">${t('editor.home')}</option>`;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === S.view));
 }
@@ -402,12 +568,12 @@ function changesHtml() {
 /* cambiar de partida / volver al inicio, con lista de cambios pendientes */
 $('#slot-switch').onchange = e => {
   const target = e.target.value;
-  e.target.value = String(S.sess.slot);
+  e.target.value = S.sess.imported ? 'imp' : String(S.sess.slot);
   switchTo(target);
 };
 $('#btn-home').onclick = () => switchTo('home');
 function switchTo(target) {
-  const cur = S.sess.slot;
+  const cur = S.sess.imported ? 'imp' : S.sess.slot;
   if (target === String(cur)) return;
   const go = async () => {
     if (target === 'home') { await api('/api/session/close', {}); S.sess = null; return showStart(); }
@@ -439,6 +605,18 @@ async function doSave(after) {
     } }]);
 }
 $('#btn-save').onclick = () => doSave();
+async function stepChange(which) {
+  try { await api('/api/session/' + which, {}); await reloadSession(); toast(t(which === 'undo' ? 'editor.undone' : 'editor.redone')); }
+  catch (e) { toast(errText(e), true); }
+}
+$('#btn-undo').onclick = () => stepChange('undo');
+$('#btn-redo').onclick = () => stepChange('redo');
+document.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || !S.sess || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''))) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey && S.sess.can_undo) { e.preventDefault(); stepChange('undo'); }
+  else if ((k === 'y' || (k === 'z' && e.shiftKey)) && S.sess.can_redo) { e.preventDefault(); stepChange('redo'); }
+});
 $('#btn-discard').onclick = () => showModal(t('editor.discard'), `<p>${t('editor.discard_q')}</p>${changesHtml()}`, [
   { label: t('common.cancel'), onClick: closeModal },
   { label: t('editor.discard'), danger: true, onClick: async () => { await api('/api/session/discard', {}); closeModal(); await reloadSession(); toast(t('editor.discarded')); } }]);
@@ -475,8 +653,8 @@ function viewSummary() {
   const row = (img, label, value) => `<div class="ovli"><span class="ovlimg">${img}</span><span class="ovlab">${label}</span><span class="ovval">${value}</span></div>`;
   const emo = e => `<span class="ovemo">${e}</span>`;
   $('#main').innerHTML = `<h1>${t('summary.title')}</h1><p class="help">${t('summary.help')}</p>
-    <div class="grid">
-      <div class="card"><h2>${esc(slotName(S.sess))}</h2>
+    <div class="grid sumgrid">
+      <div class="card"><h2 class="ovhead">${esc(slotName(S.sess))}<button class="ibtn pencil" id="b-rename" title="${esc(rawT('slots.rename_tip'))}">✎</button></h2>
         <div class="ovlist" id="ov-list">
           ${row(emo('📍'), t('slots.location'), `${esc(galLabel(f.galaxy))} · ${t('common.system')} ${f.address.system}`)}
           ${row(emo('🧍'), t('slots.state'), esc(t('state.' + f.state)))}
@@ -485,10 +663,11 @@ function viewSummary() {
           <div id="ov-more"></div>
         </div>
         ${f.name_ok === false ? `<p class="msg warn"><span>${t('slots.name_lost', { name: esc(f.name) })}</span></p>` : ''}
-        <button class="btn" id="b-rename">${t('slots.rename')}</button></div>
-      <div class="card"><h2>${t('editor.pending')}</h2>${changesHtml()}
-        <h2 style="margin-top:22px">${t('log.title')}</h2>${changelogHtml()}</div></div>
-    <div id="ov" style="margin-top:18px"></div>
+        <div id="ov-fleet"></div></div>
+      <div class="card"><div id="ov-journey"></div></div></div>
+    <div class="card sumlog"><div><h2>${t('editor.pending')}</h2>${changesHtml()}</div>
+      <div><h2>${t('log.title')}</h2>${changelogHtml()}</div></div>
+    <div id="ov"></div>
     <div id="bk-usage-sum" style="margin-top:18px"></div>`;
   overviewCards(row);
   backupUsage($('#bk-usage-sum'));
@@ -499,6 +678,34 @@ function viewSummary() {
 }
 
 /* -- Viaje -- */
+/* medallas e hitos (página "Trayectoria" del juego): nivel alcanzado en cada estadística, solo lectura */
+function journeyHtml(j) {
+  if (!j || !j.length) return '';
+  const val = m => m.float ? fmtN(Math.round(m.value)) : fmtN(m.value);
+  const cats = j.map(c => `<div class="jcat"><h3>${esc(c.name)}</h3>${c.medals.map(m => {
+    const pct = Math.round(100 * m.level / Math.max(1, m.max)), done = m.level >= m.max;
+    const tip = done ? rawT('jr.max') : rawT('jr.next', { v: fmtN(Math.round(m.next)) });
+    return `<div class="jm${done ? ' done' : ''}" title="${esc(tip)}"><span class="jt">${esc(m.title)}</span><b>${val(m)}</b>
+      <span class="jbar"><i style="width:${Math.max(3, pct)}%"></i></span><span class="jl">${t('jr.level', { n: m.level, max: m.max })} · ${esc(m.level_name)}</span></div>`;
+  }).join('')}</div>`).join('');
+  return `<h2>${t('jr.title')}</h2><p class="muted small">${t('jr.note')}</p><div class="jgrid">${cats}</div>`;
+}
+
+/* reputación con una facción: el emblema de fondo a la izquierda y, encima, nombre, estatus y
+   [misiones, y los dos siguientes hitos de su página del juego], con todo detallado en el tooltip */
+function repBanner(r, icon) {
+  const m = r.medals || [], st = m[0], rest = m.slice(1, 4);
+  const val = x => fmtN(x.float ? Math.round(x.value) : x.value);
+  const short = x => { const v = x.float ? Math.round(x.value) : x.value;   // [..] corto; el tooltip lleva el valor completo
+    return Math.abs(v) >= 100000 ? new Intl.NumberFormat(NUM_LOCALE[S.state && S.state.settings.ui_lang] || 'es-ES', { notation: 'compact', maximumFractionDigits: 1 }).format(v) : fmtN(v); };
+  const tip = [st ? rawT('rep.tip_standing', { v: val(st), lv: st.level, max: st.max, name: st.level_name }) : rawT('ov.rep.' + r.id) + ': ' + fmtN(r.value)]
+    .concat(m.slice(1).map(x => `${x.title}: ${val(x)} · ${rawT('jr.level', { n: x.level, max: x.max })} · ${x.level_name}`)).join('\n');
+  return `<div class="repban f-${icon}" title="${esc(tip)}"><span class="repcorner"><img class="repico" src="/uiicon/${icon}" alt="" draggable="false" onerror="this.remove()"></span>
+    <img class="repwm" src="/uiicon/${icon}" alt="" draggable="false" onerror="this.remove()">
+    <span class="repname">${t('ov.rep.' + r.id)}</span>
+    <span class="repval"><b>${fmtN(r.value)}</b>${rest.length ? `<span class="repx">[${rest.map(short).join(', ')}]</span>` : ''}</span></div>`;
+}
+
 /* resumen ampliado: economía, reputación, naves y multiherramienta; cada dato abre su ventana si existe */
 async function overviewCards(row) {
   const box = $('#ov'); if (!box) return;
@@ -518,22 +725,23 @@ async function overviewCards(row) {
   if (more) more.innerHTML = row(raceImg, t('ov.race'), raceName)
     + row(ui('units'), t('ov.units'), num(o.units)) + row(ui('nanites'), t('ov.nanites'), num(o.nanites))
     + row(ui('quicksilver'), t('ov.quicksilver'), num(o.quicksilver))
-    + `<div class="ovsub">${t('ov.reputation')}</div>`
-    + o.reputation.map(r => row(ui(REP[r.id]), t('ov.rep.' + r.id), num(r.value))).join('');
+    + `<div class="ovsub">${t('ov.reputation')}</div><div class="repbans">${o.reputation.map(r => repBanner(r, REP[r.id])).join('')}</div>`;
   const shipImg = sh => `<img class="ovi ship" src="/shipicon/${sh.type}" alt="" draggable="false" onerror="this.outerHTML=svgIcon('${sh.type}')">`;
   const shipTile = (label, sh) => tile(shipImg(sh), label, `${esc(sh.name || tt('term.unnamed_ship', { type: tt('term.shiptype.' + sh.type) }))} ${cls(sh.class)}`,
     esc(tt('term.shiptype.' + sh.type)), `data-goship="${sh.index}"`);
-  box.innerHTML = `
-    <h2 class="ovh">${t('ov.fleet')}</h2>
-    <div class="ovrow">
+  const fleet = $('#ov-fleet') || box;
+  fleet.innerHTML = `
+    <div class="ovsub">${t('ov.fleet')}</div>
+    <div class="ovrow incard">
       ${o.primary_ship ? shipTile(t('ov.primary_ship'), o.primary_ship) : ''}
       ${f.freighter ? tile(ui('freighter'), t('slots.freighter'), esc(f.freighter.name || t('slots.freighter')), '', 'data-goinv="freighter"') : ''}
       ${o.vehicle ? tile(ui('exocraft'), t('ov.vehicle'), esc(o.vehicle.name || o.vehicle.type), o.vehicle.name ? esc(o.vehicle.type) : '', `data-goinv="vehicle${o.vehicle.index}"`) : ''}
       ${o.corvettes.map(c => shipTile(t('ov.corvette'), c)).join('')}
       ${o.multitool ? tile(ui('weapon'), t('ov.weapon'), `${esc(o.multitool.name || t('inv.mt', { n: o.multitool.index + 1 }))} ${cls(o.multitool.class)}`, t('ov.no_view_yet'), null) : ''}
     </div>`;
-  box.querySelectorAll('[data-goship]').forEach(a => a.onclick = e => { e.preventDefault(); S.openShip = +a.dataset.goship; S.view = 'ships'; renderEditor(); });
-  box.querySelectorAll('[data-goinv]').forEach(a => a.onclick = async e => {
+  const jb = $('#ov-journey'); if (jb) jb.innerHTML = journeyHtml(o.journey);
+  fleet.querySelectorAll('[data-goship]').forEach(a => a.onclick = e => { e.preventDefault(); S.openShip = +a.dataset.goship; S.view = 'ships'; renderEditor(); });
+  fleet.querySelectorAll('[data-goinv]').forEach(a => a.onclick = async e => {
     e.preventDefault(); const id = a.dataset.goinv;
     S.invOpen = S.invOpen || new Set(['suit', 'freighter']); S.invOpen.add(id); S.view = 'inventories'; renderTopbar(); await viewInventories();
     const el = document.querySelector(`.invbox[data-inv="${id}"]`); el && el.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -542,14 +750,17 @@ async function overviewCards(row) {
 function viewTravel() {
   const T = S.travel, cur = newest(S.sess);
   if (T.galaxy == null) T.galaxy = cur.galaxy;
-  const q = T.q.toLowerCase();
+  const q = T.q.toLowerCase(), visited = new Set(cur.visited_galaxies || []);
   const list = S.galaxies.filter(g => !q || g.name.toLowerCase().includes(q) || String(g.n) === q)
-    .map(g => `<div data-ri="${g.ri}" class="${g.ri === T.galaxy ? 'sel' : ''}"><span>${g.n}. ${esc(g.name)}</span><span class="t-${g.type}">${t('travel.type.' + g.type)}</span></div>`).join('');
+    .map(g => `<div data-ri="${g.ri}" class="${g.ri === T.galaxy ? 'sel' : ''}"><span>${g.n}. ${esc(g.name)}${visited.has(g.ri) ? ` <span class="gvis" title="${esc(rawT('travel.visited'))}">✔</span>` : ''}</span><span class="t-${g.type}">${t('travel.type.' + g.type)}</span></div>`).join('');
   const modes = ['current', 'glyphs', 'galactic', 'manual'].map(m => `<button data-mode="${m}" class="${T.mode === m ? 'on' : ''}">${t('travel.mode_' + m)}</button>`).join('');
   let modeHtml = '';
   if (T.mode === 'glyphs') {
-    const pad = S.glyphNames.map((n, i) => `<button data-g="${i.toString(16).toUpperCase()}"><b>${i.toString(16).toUpperCase()}</b>${esc(n)}</button>`).join('');
-    modeHtml = `<div class="glyphline">${esc(T.glyphs.padEnd(12, '·'))}</div><div class="glyphpad">${pad}</div>
+    const gi = c => `<img class="gly" src="/uiicon/glyph${c.toLowerCase()}" alt="${c}" draggable="false" onerror="this.replaceWith('${c}')">`;
+    const pad = S.glyphNames.map((n, i) => { const c = i.toString(16).toUpperCase();
+      return `<button data-g="${c}" title="${c} · ${esc(n)}">${gi(c)}<small>${c} · ${esc(n)}</small></button>`; }).join('');
+    const line = [...T.glyphs.padEnd(12, '·')].map(c => c === '·' ? '<span class="gslot"></span>' : `<span class="gslot on">${gi(c)}</span>`).join('');
+    modeHtml = `<div class="glyphline" title="${esc(T.glyphs)}">${line}</div><div class="glyphpad">${pad}</div>
       <div class="row"><button class="btn" id="g-back">${t('travel.glyph_back')}</button><button class="btn" id="g-clear">${t('travel.glyph_clear')}</button></div>`;
   } else if (T.mode === 'galactic') {
     modeHtml = `<label>${t('travel.mode_galactic')}<input id="f-gal" placeholder="${t('travel.galactic_ph')}" value="${esc(T.galactic)}"></label>`;
@@ -670,18 +881,34 @@ function fmtRange(stat, a, b) {
   if (a === 1 && b === 1 && stat !== 'Ship_Cargo_Slots') return '';
   return a === b ? f(a) : `${f(a)} … ${f(b)}`;
 }
-function techTip(id, rid) {
+/* one value as the game's tooltip shows it: kind 'pct' (+29 %), 'ly' (250 ly), 'num' or 'on' (Enabled) */
+/* the game's own label for a stat; our own text only when the game data has none */
+function statName(st) {
+  const x = rawT('statx.' + st);                      // own label where the game uses the same one twice
+  if (x !== 'statx.' + st) return x;
+  const g = S.statNames && S.statNames[st];
+  if (g) return g;
+  const own = rawT('statn.' + st);
+  return own === 'statn.' + st ? st.replace(/_/g, ' ') : own;
+}
+function fmtVal(kind, txt) {
+  if (kind === 'on') return rawT('tip.on');
+  if (kind === 'ly') return rawT('tip.ly', { v: txt });
+  return kind === 'pct' ? txt + ' %' : txt;
+}
+function techTip(id, rid, vals) {
   const r = realId(id, rid), tp = r && S.tips && S.tips[r];
   if (!tp) return '';
   let out = '';
   if (tp.s) out += '\n' + tp.s;
   if (tp.c) out += '\n' + rawT('tip.class', { c: tp.c });
   if (tp.d) out += '\n\n' + tp.d;
-  if (tp.r && tp.r.length) out += '\n\n' + rawT('tip.ranges') + tp.r.map(([st, a, b]) => {
-    const v = fmtRange(st, a, b); return `\n• ${rawT('statn.' + st)}${v ? ': ' + v : ''}`; }).join('');
+  if (vals && vals.length) out += '\n\n' + rawT('tip.values') + vals.map(([st, k, v]) => `\n• ${statName(st)}: ${fmtVal(k, v)}`).join('');
+  else if (tp.r && tp.r.length) out += '\n\n' + rawT('tip.ranges') + tp.r.map(([st, a, b]) => {
+    const v = fmtRange(st, a, b); return `\n• ${statName(st)}${v ? ': ' + v : ''}`; }).join('');
   return out;
 }
-function invGrid(ship, grid, inv, items, withSc) {
+function invGrid(ship, grid, inv, items, withSc, vals) {
   const adj = grid === 'tech' ? adjFrames(items) : {};
   const sc = new Set((withSc ? inv.sc : []).map(c => c.join(','))), valid = new Set(inv.valid_cells.map(c => c.join(',')));
   const at = Object.fromEntries(items.map(it => [`${it[0]},${it[1]}`, it]));
@@ -702,7 +929,8 @@ function invGrid(ship, grid, inv, items, withSc) {
       inner = itemIcon(id, rid, qty + bar + (dmg ? '<b class="dmgi">!</b>' : ''));
     }
     const cat = it ? catText(grp, grid === 'tech' ? 'Technology' : it[5]) : '';
-    h += `<span class="${cls}" data-cell="${k}" ${a ? `style="--adj:${a.c}"` : ''} ${it ? 'draggable="true"' : ''} title="${x + 1}·${y + 1}${it ? ' — ' + esc(itemName(it[2], it[6])) + (grid === 'cargo' && it[3] > 1 ? ' ×' + it[3] : '') + (dmg ? '\n' + esc(rawT('grid.damaged')) : '') + esc(chg) + (grid === 'tech' ? esc(techTip(it[2], it[6])) : '') + (low ? '\n' + esc(rawT('grid.low')) : '') + (cat ? '\n' + esc(cat) : '') : ''}${sc.has(k) ? ' ★' : ''}">${inner}</span>`;
+    const tcls = it && grid === 'tech' ? ((S.tips && S.tips[realId(it[2], it[6])]) || {}).c : '';
+    h += `<span class="${cls}" data-cell="${k}" ${tcls ? `data-tipcls="${esc(tcls)}"` : ''} ${a ? `style="--adj:${a.c}"` : ''} ${it ? 'draggable="true"' : ''} title="${x + 1}·${y + 1}${it ? ' — ' + esc(itemName(it[2], it[6])) + (grid === 'cargo' && it[3] > 1 ? ' ×' + it[3] : '') + (sc.has(k) ? ' ★' : '') + (dmg ? '\n' + esc(rawT('grid.damaged')) : '') + esc(chg) + (low ? '\n' + esc(rawT('grid.low')) : '') + (cat ? '\n' + esc(cat) : '') + (grid === 'tech' ? esc(techTip(it[2], it[6], vals && vals[k])) : '') : (sc.has(k) ? ' ★' : '')}">${inner}</span>`;
   }
   return h + '</div>';
 }
@@ -746,7 +974,7 @@ function shipPanel(sh, f) {
   const sameModel = f.ships.filter(o => o.model && o.model === sh.model && o.index !== sh.index && o.seed && o.seed !== I.seed)
     .map(o => `<option value="${esc(o.seed)}">${o.index + 1}. ${esc(shipLabel(o))} · ${esc(o.seed)}</option>`).join('');
   const nDmg = (I.Inventory.damaged || 0) + (I.Inventory_TechOnly.damaged || 0);
-  const nClosed = I.kind === 'corvette' ? 0 : [I.Inventory, I.Inventory_TechOnly].reduce((n, x) => n + Math.max(0, x.w * x.h - x.valid), 0);
+  const nClosed = [I.Inventory, I.Inventory_TechOnly].reduce((n, x) => n + Math.max(0, x.w * x.h - x.valid), 0);
   const why = I.kind === 'corvette' ? t('ship.protect_corvette') : I.kind === 'living' ? t('ship.protect_living') : '';
   const full = I.Inventory.valid >= 120 && I.Inventory.w * I.Inventory.h >= 120 && (!I.sc_fixed || (I.Inventory_TechOnly.valid >= 60 && I.Inventory_TechOnly.w * I.Inventory_TechOnly.h >= 60));
   const ib = (op, icon, tip, off = false) => can(op)
@@ -768,14 +996,16 @@ function shipPanel(sh, f) {
       <span>${t('ship.class')}</span><span>${esc(I.class)}</span>
       <span>Seed</span><span><code>${esc(I.seed || '—')}</code></span>
       <span>${t('ship.model')}</span><span><code>${esc(sh.model)}</code></span></div>
-    ${statsHtml(I.stats, false)}
-    <div class="grids" style="--tw:${I.Inventory_TechOnly.w}fr;--cw:${I.Inventory.w}fr"><div class="scbox"><b>${t('ship.sc_title')}</b>
+    ${realHtml(I.real)}
+    <div class="grids" style="--tw:${I.Inventory_TechOnly.w}fr;--cw:${I.Inventory.w}fr"><div class="scbox"><div class="schead"><b>${t('ship.sc_title')}</b>${I.Inventory_TechOnly.used > 1 ? `<button class="ibtn" data-autosort title="${esc(rawT('autosort.btn'))}" aria-label="${esc(rawT('autosort.btn'))}">⇅</button>` : ''}</div>
       <span>${t('ship.sc_desc', { n: I.Inventory_TechOnly.super, max: I.sc_max, cls: esc(I.Inventory_TechOnly.cls), shape: scName(I.sc_shape) })}</span>
-      ${invGrid(sh.index, 'tech', I.Inventory_TechOnly, I.tech_items, true)}
+      ${invGrid(sh.index, 'tech', I.Inventory_TechOnly, I.tech_items, true, I.tech_vals)}
       ${g(I.Inventory_TechOnly, t('ship.tech'), `<span class="muted small">${t('ship.class_note')}</span>${modulesHtml(I)}`)}</div>
-    <div class="scbox"><b>${t('grid.cargo_title')}</b>${cellsInfo(I.Inventory)}<span class="muted small">${t('grid.drag_hint')}</span>
+    <div class="scbox"><div class="schead"><b>${t('grid.cargo_title')}</b><button class="ibtn" data-cargosort title="${esc(rawT('inv.sort'))}" aria-label="${esc(rawT('inv.sort'))}" ${I.cargo_items.length ? '' : 'disabled'}>⇅</button></div>${cellsInfo(I.Inventory)}<span class="muted small">${t('grid.drag_hint')}</span>
       ${invGrid(sh.index, 'cargo', I.Inventory, I.cargo_items, false)}</div></div>
     ${why ? `<p class="muted small">🛡 ${why}</p>` : ''}
+    ${(I.bad_tech || []).length && can('fix_tech') ? `<div class="msg warn badtech"><span>⚠ ${t('ship.bad_tech', { n: I.bad_tech.length, items: esc(I.bad_tech.map(([a]) => itemName(a)).join(', ')) })}</span>
+      <button class="btn small" data-op="fix_tech">${t('ship.fix_tech')}</button></div>` : ''}
     <div class="acts">
       ${prim ? '' : `<div class="act"><button class="btn small" data-op="primary">★ ${t('ships.set_primary')}</button></div>`}
       ${act('seed', t('ship.seed'), `<div class="seedbox"><input data-in="seed" value="${esc(I.seed || '')}" placeholder="0x…" spellcheck="false">${sameModel ? `<select data-seedfrom title="${esc(rawT('ship.seed_from_tip'))}"><option value="">${t('ship.seed_from')}</option>${sameModel}</select>` : ''}<div class="seedhist" data-sh="${sh.index}"></div><span class="muted small">${t('ship.seed_note')}</span></div>`, 'wide')}
@@ -789,6 +1019,41 @@ function shipPanel(sh, f) {
         <span class="muted small">${t('ship.transfer_note')}</span></div>` : ''}
       ${act('delete', t('ship.delete'), '', 'danger')}
     </div></div>`;
+}
+
+/* auto-ordenar la tecnología: 1 o 2 prioridades para las supercargadas; el resto por adyacencia */
+const AUTOSORT_KEYS = ['damage', 'hyperdrive', 'shield', 'pulse'];
+function openAutosort(ship) {
+  const boxes = AUTOSORT_KEYS.map(k => `<label class="chk"><input type="checkbox" data-prio="${k}"> ${t('autosort.p.' + k)}</label>`).join('');
+  showModal(t('autosort.title'), `<p>${t('autosort.ask')}</p><div class="prios">${boxes}</div><p class="muted small">${t('autosort.note')}</p>`, [
+    { label: t('common.cancel'), onClick: closeModal },
+    { label: t('autosort.calc'), primary: true, onClick: () => runAutosort(ship) }]);
+  const sync = () => { const on = [...document.querySelectorAll('[data-prio]:checked')];
+    document.querySelectorAll('[data-prio]').forEach(c => { c.disabled = !c.checked && on.length >= 2; });
+    const btn = document.querySelector('#modal-actions .primary'); if (btn) btn.disabled = !on.length; };
+  document.querySelectorAll('[data-prio]').forEach(c => c.onchange = sync); sync();
+}
+async function runAutosort(ship) {
+  const prios = [...document.querySelectorAll('[data-prio]:checked')].map(c => c.dataset.prio);
+  lockModal();
+  let r; try { r = await api('/api/session/autosort', { ship, priorities: prios }); } catch (e) { closeModal(); return toast(errText(e), true); }
+  const nm = b => esc(S.names[r.names[b]] || r.names[b] || b);
+  const fmt = v => (Math.round(v * 10) / 10).toLocaleString(S.state?.settings?.ui_lang || 'es');
+  const row = (label, a, b) => { const d = b - a, cls = Math.abs(d) < 0.05 ? '' : d > 0 ? 'good' : 'bad';
+    return `<tr><td>${label}</td><td>${fmt(a)}</td><td>→</td><td class="${cls}">${fmt(b)}</td></tr>`; };
+  const rows = [];
+  if (r.before.hyperdrive != null) rows.push(row(t('autosort.v.hyperdrive'), r.before.hyperdrive, r.after.hyperdrive));
+  if (r.before.shield != null) rows.push(row(t('autosort.v.shield'), r.before.shield, r.after.shield));
+  // weapons: only the ones that change, plus the recommended one
+  Object.keys(r.before).filter(k => k.startsWith('dps:') && (Math.abs(r.after[k] - r.before[k]) >= 0.05 || k.slice(4) === r.recommend))
+    .forEach(k => rows.push(row(t('autosort.v.dps', { w: nm(k.slice(4)) }), r.before[k], r.after[k])));
+  const rec = r.recommend ? `<p class="msg info"><span>${t('autosort.recommend', { w: nm(r.recommend) })}</span></p>` : '';
+  const body = r.moves.length
+    ? `${rec}<table class="astable">${rows.join('')}</table><p class="muted small">${t('autosort.moves', { n: r.moves.length })}</p><p class="muted small">${t('autosort.how')}</p>`
+    : `${rec}<p>${t('autosort.already')}</p>`;
+  showModal(t('autosort.title'), body, [
+    { label: t('common.cancel'), onClick: closeModal },
+    ...(r.moves.length ? [{ label: t('common.preview'), primary: true, onClick: () => { closeModal(); previewAndApply('inv', { op: 'arrange', inv: r.inv, moves: r.moves }, reloadSession); } }] : [])]);
 }
 
 /* historial de seeds aplicados a cada nave: volver al original o rotar con un clic */
@@ -842,11 +1107,12 @@ function viewShips() {
       ${open ? '' : `<div class="tilehead">${icon(sh.type)}<div>
         <b class="${sh.name ? '' : 'muted'}">${esc(shipLabel(sh))}</b>
         <span class="muted small">${esc(tt('term.shiptype.' + sh.type))}${I ? ` · ${t('ship.class')} ${esc(I.class)}` : ''}${alert ? ` · <span class="bad">⚠ ${alert}</span>` : ''}</span>
-        ${I ? statsHtml(I.stats, true) : ''}</div></div>`}
+        ${I ? statsHtml(I.stats) : ''}</div></div>`}
       ${I ? `<button class="btn small" data-toggle="${idx}">${open ? t('ship.close') : t('ship.options')}</button>` : ''}
       ${open ? shipPanel(sh, f) : ''}</div>`;
   }).join('');
   $('#main').innerHTML = `<h1>${t('ships.title')}</h1><p class="help">${t('ships.help')}</p>
+    <div class="row end shipsel"><span class="muted small">${t('ships.sel_hint')}</span><button class="btn small danger" id="ship-delsel" title="${esc(rawT('inv.delsel_hint'))}"></button></div>
     ${moved ? `<div class="card orderbar row between"><span>${t('ships.order_changed')}</span>
       <span class="row"><button class="btn" id="o-undo">${t('ships.order_undo')}</button><button class="btn primary" id="o-apply">${t('ships.order_apply')}</button></span></div>` : ''}
     <div class="tiles" id="tiles">${tiles}</div>
@@ -886,6 +1152,24 @@ function viewShips() {
     });
   });
   document.querySelectorAll('.igrid[data-ship] .c.has').forEach(c => c.addEventListener('contextmenu', e => itemMenu(e, c)));
+  // clic: seleccionar objetos de la nave abierta para «Borrar seleccionados» (se guarda por inventario: ship3, shiptech3)
+  const selKey = `${S.sess.slot}:${S.sess.changes.length}:${S.sess.dirty}`;
+  if (S.shipSelKey !== selKey) { S.shipSel = {}; S.shipSelKey = selKey; }     // cells change with every edit
+  const shipCid = g => (g.dataset.grid === 'tech' ? 'shiptech' : 'ship') + g.dataset.ship;
+  const shipDel = $('#ship-delsel');
+  const validShips = new Set(f.ships.filter(x => x.model).map(x => x.index));
+  for (const cid of Object.keys(S.shipSel)) if (!validShips.has(+cid.replace(/\D/g, ''))) delete S.shipSel[cid];
+  document.querySelectorAll('.igrid[data-ship]').forEach(g => {
+    const set = S.shipSel[shipCid(g)];
+    if (set) g.querySelectorAll('.c.has').forEach(c => c.classList.toggle('sel', set.has(c.dataset.cell)));
+  });
+  document.querySelectorAll('.igrid[data-ship] .c.has').forEach(c => c.addEventListener('click', () => {
+    const cid = shipCid(c.closest('.igrid')), set = (S.shipSel[cid] = S.shipSel[cid] || new Set());
+    if (set.has(c.dataset.cell)) set.delete(c.dataset.cell); else set.add(c.dataset.cell);
+    c.classList.toggle('sel', set.has(c.dataset.cell)); delSelButton(shipDel, S.shipSel);
+  }));
+  delSelButton(shipDel, S.shipSel);
+  shipDel.onclick = () => deleteSelected(S.shipSel);
   document.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () => { const i = +b.dataset.toggle; S.openShip = S.openShip === i ? null : i; viewShips(); });
   document.querySelectorAll('[data-panel] [data-seedfrom]').forEach(sel => sel.onchange = () => {
     const inp = sel.closest('.act').querySelector('[data-in="seed"]'); if (sel.value && inp) inp.value = sel.value; });
@@ -895,6 +1179,10 @@ function viewShips() {
     if (op === 'primary') return previewAndApply('set_primary', { ship }, reloadSession);
     previewAndApply('ship', { ship, op, name: val('name'), cls: val('cls'), seed: val('seed'), from: val('from') != null ? +val('from') : undefined }, reloadSession);
   });
+  document.querySelectorAll('[data-panel] [data-autosort]').forEach(b => b.onclick = () => openAutosort(+b.closest('[data-panel]').dataset.panel));
+  document.querySelectorAll('[data-panel] [data-cargosort]').forEach(b => b.onclick = () => {
+    const i = +b.closest('[data-panel]').dataset.panel, sh = newest(S.sess).ships.find(x => x.index === i);
+    sortDialog('ship' + i, shipLabel(sh), 'ship'); });
   document.querySelectorAll('[data-panel] [data-renameship]').forEach(b => b.onclick = () => {
     const bar = b.closest('[data-panel]').querySelector('[data-shiprenamebar]'); bar.hidden = !bar.hidden;
     if (!bar.hidden) { const i = bar.querySelector('input'); i.focus(); i.select(); } });
@@ -937,7 +1225,7 @@ function invLabel(c) {
   return c.name ? rawT('inv.ship', { n, name: c.name }) : rawT('inv.ship_unnamed', { n });
 }
 const fold = v => String(v ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-const fmtN = n => Number(n).toLocaleString(S.state && S.state.settings.ui_lang === 'en' ? 'en-US' : 'es-ES');
+const fmtN = n => Number(n).toLocaleString(NUM_LOCALE[S.state && S.state.settings.ui_lang] || 'es-ES');
 function itemKeys(id, rid) {
   const r = realId(id, rid);
   if (!r) return fold(t('item.procedural'));
@@ -981,7 +1269,9 @@ async function viewInventories() {
   const level = d.level ? t('inv.level', { level: rawT('inv.level.' + d.level) }) : t('inv.no_level');
   main.innerHTML = `<h1>${t('inv.title')}</h1><p class="help">${t('inv.help')}</p>
     <p class="muted small">${level}</p>
-    <div class="invsearch"><input id="inv-q" type="search" autocomplete="off" placeholder="${esc(rawT('inv.search'))}" value="${esc(S.invQ || '')}"><div id="inv-found"></div></div>
+    <div class="invsearch"><div class="invq"><input id="inv-q" type="search" autocomplete="off" placeholder="${esc(rawT('inv.search'))}" value="${esc(S.invQ || '')}">
+      <button class="btn small" id="inv-all"></button>
+      <button class="btn small danger" id="inv-delsel" title="${esc(rawT('inv.delsel_hint'))}"></button></div><div id="inv-found"></div></div>
     <div class="invlist">${fixed.map(box).join('')}</div>
     ${vehC.length ? `<h2>${t('inv.group_vehicles')}</h2><div class="invlist">${vehC.map(box).join('')}</div>` : ''}
     ${shipsC.length ? `<h2>${t('inv.group_ships')}</h2><div class="invlist">${shipsC.map(box).join('')}</div>` : ''}
@@ -995,21 +1285,23 @@ function boxGrid(c) {
   let h = `<div class="igrid fluid" data-inv="${c.id}" style="grid-template-columns:repeat(${c.w},minmax(0,1fr))">`;
   for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) {
     const k = `${x},${y}`, it = at[k];
-    let inner = '', title = `${x + 1}·${y + 1}`;
+    let inner = '', title = `${x + 1}·${y + 1}`, tipText = '', tipCls = '';
     if (it) {
       const [, , id, a, m, kind, rid, grp, dmg] = it;
       if (kind === 'Technology') {
         const bar = m > 0 && a >= 0 ? `<i class="chg" style="width:${Math.max(0, Math.min(100, a / m * 100))}%"></i>` : '';
         inner = itemIcon(id, rid, (realId(id, rid) ? bar : '') + (dmg ? '<b class="dmgi">!</b>' : ''));
         title += ` — ${itemName(id, rid)}${m > 0 && a >= 0 ? ` (${fmtN(a)}/${fmtN(m)})` : ''}${dmg ? '\n' + rawT('grid.damaged') : ''}`;
+        tipText = techTip(id, rid, c.vals && c.vals[k]); tipCls = ((S.tips && S.tips[realId(id, rid)]) || {}).c || '';
       } else {
         inner = itemIcon(id, rid, a > 1 ? `<b class="qty">${a > 9999 ? fmtN(a) : a}</b>` : '');
         title += ` — ${itemName(id, rid)} ×${fmtN(a)} (${rawT('inv.limit_tip', { mx: fmtN(m) })})`;
       }
       const cat = catText(grp, kind);
       if (cat) title += `\n${cat}`;
+      title += tipText;
     }
-    h += `<span class="c ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''} ${it && it[8] ? 'dmg' : ''} ${it && S.invSel?.[c.id]?.has(k) ? 'sel' : ''}" data-cell="${k}" ${it ? `draggable="true" data-k="${esc(itemKeys(it[2], it[6]))}" data-id="${esc(it[2])}"` : ''} title="${esc(title)}">${inner}</span>`;
+    h += `<span ${tipCls ? `data-tipcls="${esc(tipCls)}"` : ''} class="c ${valid.has(k) ? '' : 'locked'} ${it ? 'has' : ''} ${it && it[8] ? 'dmg' : ''} ${it && S.invSel?.[c.id]?.has(k) ? 'sel' : ''}" data-cell="${k}" ${it ? `draggable="true" data-k="${esc(itemKeys(it[2], it[6]))}" data-id="${esc(it[2])}"` : ''} title="${esc(title)}">${inner}</span>`;
   }
   return h + '</div>';
 }
@@ -1036,16 +1328,19 @@ function applyInvSearch() {
 }
 
 /* «Ordenar por…»: criterio y sentido; se recuerda la última elección */
-function sortDialog(cid) {
+function sortDialog(cid, label, kind) {
   const p = S.sortPref || (S.sortPref = { key: 'name', dir: 'asc' });
-  const c = S.inv.data.containers.find(x => x.id === cid);
-  showModal(t('inv.sort_title', { inv: invLabel(c) }), `<div class="stack">
+  if (label == null) { const c = S.inv.data.containers.find(x => x.id === cid); label = invLabel(c); kind = c.kind; }
+  const shieldNote = kind === 'ship' && !S.state.settings.shield_sort_seen;    // explained once; the rule always applies
+  showModal(t('inv.sort_title', { inv: label }), `<div class="stack">
       <label>${t('inv.sort_by')}<select id="s-key">${['name', 'rarity', 'value'].map(k => `<option value="${k}" ${p.key === k ? 'selected' : ''}>${t('inv.sort.' + k)}</option>`).join('')}</select></label>
       <label>${t('inv.sort_dir')}<select id="s-dir">${['asc', 'desc'].map(k => `<option value="${k}" ${p.dir === k ? 'selected' : ''}>${t('inv.dir.' + k)}</option>`).join('')}</select></label>
-      <p class="muted small" id="s-help"></p></div>`, [
+      <p class="muted small" id="s-help"></p>
+      ${shieldNote ? `<p class="msg info"><span>🛡 ${t('inv.sort_shield_note')}</span></p>` : ''}</div>`, [
     { label: t('common.cancel'), onClick: closeModal },
     { label: t('common.preview'), primary: true, onClick: () => {
       S.sortPref = { key: $('#s-key').value, dir: $('#s-dir').value };
+      if (shieldNote) { S.state.settings.shield_sort_seen = true; api('/api/settings', { shield_sort_seen: true }, { quiet: true }).catch(() => {}); }
       previewAndApply('inv', { op: 'sort', inv: cid, ...S.sortPref }, reloadSession); } }]);
   const help = () => { $('#s-help').textContent = rawT('inv.sort_help.' + $('#s-key').value + '.' + $('#s-dir').value); };
   $('#s-key').onchange = help; $('#s-dir').onchange = help; help();
@@ -1126,12 +1421,25 @@ function gatherDialog(cid) {
 
 /* selección (clic) y menú del objeto (clic derecho) */
 const selCount = cid => (S.invSel && S.invSel[cid] ? S.invSel[cid].size : 0);
+const selTotal = sel => Object.values(sel || {}).reduce((n, x) => n + x.size, 0);
 function refreshSelUi(cid) {
   const b = document.querySelector(`[data-movesel="${cid}"]`), n = selCount(cid);
   if (b) { b.disabled = !n; b.textContent = t('inv.movesel') + (n ? ` (${n})` : ''); }
+  delSelButton($('#inv-delsel'), S.invSel);
+}
+function delSelButton(b, sel) {
+  if (!b) return;
+  const n = selTotal(sel);
+  b.disabled = !n; b.textContent = '🗑 ' + rawT('inv.delsel') + (n ? ` (${n})` : '');
+}
+/* «Borrar seleccionados»: one change for every inventory with picked cells; the preview is the confirmation */
+function deleteSelected(sel) {
+  const p = Object.fromEntries(Object.entries(sel || {}).filter(([, x]) => x.size).map(([cid, x]) => [cid, [...x].map(c => c.split(',').map(Number))]));
+  if (!Object.keys(p).length) return;
+  previewAndApply('inv', { op: 'delete_many', sel: p }, () => { S.invSel = {}; S.shipSel = {}; return reloadSession(); });
 }
 function clearSelection() {
-  S.invSel = {};
+  S.invSel = {}; delSelButton($('#inv-delsel'), S.invSel);
   document.querySelectorAll('.invbox .c.sel').forEach(c => c.classList.remove('sel'));
   document.querySelectorAll('[data-movesel]').forEach(b => refreshSelUi(b.dataset.movesel));
 }
@@ -1187,6 +1495,7 @@ function itemMenu(ev, cell) {
     ['split', t('inv.op.split'), movable && a > 1 && free > 0],
     ['fill', t('inv.op.fill', { mx: fmtN(m) }), movable && a < m],
     ['dup', t('inv.op.dup'), movable && free > 0],
+    ['gather_id', '📥 ' + t('inv.op.gather_id'), movable],
     ['delete', t('inv.op.delete'), movable]];
   const menu = document.createElement('div');
   menu.id = 'ctxmenu'; menu.className = 'ctxmenu';
@@ -1203,6 +1512,7 @@ function itemMenu(ev, cell) {
     const op = b.dataset.op, name = itemName(id, rid);
     if (op === 'fill' || op === 'dup') return quickStage('inv', { op, ...base });
     if (op === 'delete') return previewAndApply('inv', { op: 'delete', ...base }, reloadSession);
+    if (op === 'gather_id') return previewAndApply('inv', { op: 'gather_id', ...base }, reloadSession);
     showModal(t('inv.split_title', { item: name }), `<div class="stack">
         <label>${t('inv.split_n', { a: fmtN(a) })}<input id="sp-n" type="number" min="1" max="${a - 1}" value="${Math.floor(a / 2)}"></label>
         <p class="muted small" id="sp-help"></p></div>`, [
@@ -1282,13 +1592,21 @@ window.addEventListener('scroll', closeCtx, true);
 function bindInventories() {
   const q = $('#inv-q');
   q.oninput = () => { S.invQ = q.value; applyInvSearch(); };
+  const allBtn = $('#inv-all');
+  const syncAll = () => { const boxes = [...document.querySelectorAll('.invbox')], open = boxes.length && boxes.every(b => b.open);
+    allBtn.textContent = open ? '⊟ ' + rawT('inv.collapse_all') : '⊞ ' + rawT('inv.expand_all'); allBtn.dataset.open = open ? '1' : ''; };
   document.querySelectorAll('.invbox').forEach(b => b.addEventListener('toggle', () => {
-    if (b.open) S.invOpen.add(b.dataset.inv); else S.invOpen.delete(b.dataset.inv); }));
+    if (b.open) S.invOpen.add(b.dataset.inv); else S.invOpen.delete(b.dataset.inv); syncAll(); }));
+  allBtn.onclick = () => { const open = !allBtn.dataset.open;
+    document.querySelectorAll('.invbox').forEach(b => { b.open = open; }); syncAll(); };
+  syncAll();
+  const delBtn = $('#inv-delsel');
+  delSelButton(delBtn, S.invSel);
+  delBtn.onclick = () => deleteSelected(S.invSel);
   document.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => sortDialog(b.dataset.sort));
   document.querySelectorAll('[data-gather]').forEach(b => b.onclick = () => gatherDialog(b.dataset.gather));
   document.querySelectorAll('[data-movesel]').forEach(b => b.onclick = () => moveSelDialog(b.dataset.movesel));
   document.querySelectorAll('.invbox .igrid .c.has').forEach(c => {
-    if (c.closest('.invbox.tech')) { c.addEventListener('contextmenu', e => itemMenu(e, c)); return; }
     c.addEventListener('click', () => {
       const cid = c.closest('.igrid').dataset.inv, set = (S.invSel[cid] = S.invSel[cid] || new Set());
       if (set.has(c.dataset.cell)) set.delete(c.dataset.cell); else set.add(c.dataset.cell);
@@ -1317,9 +1635,13 @@ function bindInventories() {
   }));
   let from = null;
   document.querySelectorAll('.invbox .igrid .c[draggable=true]').forEach(c => {
-    c.addEventListener('dragstart', e => { from = { inv: c.closest('.igrid').dataset.inv, cell: c.dataset.cell, id: c.dataset.id };
+    c.addEventListener('dragstart', e => { const inv = c.closest('.igrid').dataset.inv, sel = S.invSel[inv];
+      // dragging one of several selected cells carries the whole selection (to another inventory)
+      const multi = sel && sel.size > 1 && sel.has(c.dataset.cell) ? [...sel].map(k => k.split(',').map(Number)) : null;
+      from = { inv, cell: c.dataset.cell, id: c.dataset.id, multi };
+      if (multi) document.querySelectorAll(`.igrid[data-inv="${inv}"] .c.sel`).forEach(x => x.classList.add('dragging'));
       c.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'cell'); });
-    c.addEventListener('dragend', () => { c.classList.remove('dragging'); });
+    c.addEventListener('dragend', () => { document.querySelectorAll('.invbox .c.dragging').forEach(x => x.classList.remove('dragging')); });
   });
   document.querySelectorAll('.invbox .igrid .c:not(.locked)').forEach(c => {
     c.addEventListener('dragover', e => { if (from) { e.preventDefault(); c.classList.add('over'); } });
@@ -1328,6 +1650,10 @@ function bindInventories() {
       e.preventDefault(); c.classList.remove('over');
       const g = c.closest('.igrid'), f = from; from = null;
       if (!f || (f.inv === g.dataset.inv && f.cell === c.dataset.cell)) return;
+      if (f.multi && f.inv !== g.dataset.inv) {
+        g.closest('.invbox').classList.add('pending');
+        return quickStage('inv', { op: 'move_many', src: f.inv, cells: f.multi, dst: g.dataset.inv });
+      }
       // vista inmediata solo para mover/intercambiar en el mismo inventario; juntar pilas o pasar a otro lo confirma el servidor
       if (f.inv === g.dataset.inv && c.dataset.id !== f.id) swapCells(g, f.cell, c.dataset.cell);
       else c.classList.add('pending');
@@ -1517,6 +1843,20 @@ const LOT_ICON = { Settlement_Hub: '🏛', Settlement_LandingZone: '🛬', Settl
   Settlement_Small: '🏠', Settlement_SmallIndustrial: '🛠', Settlement_Medium: '🏘', Settlement_Large: '🏬', Settlement_Monument: '🗿',
   Settlement_SheriffsOffice: '🛡', Settlement_Double: '🏢', Settlement_Farm: '🌾', Settlement_Factory: '🏭', Settlement_Clump: '🏚',
   Settlement_Hub_Builders: '🛸', Settlement_Builders_RoboArm: '🦾' };
+/* insignia de clase al estilo del juego: escudo del color de la clase con la letra y una corona de laurel */
+const CLASS_FILL = { C: ['#6fdc8c', '#1f8a4c'], B: ['#6cbcff', '#1d5cb0'], A: ['#c99bff', '#6232b5'], S: ['#ffd25a', '#d77d06'] };
+function classBadge(c, extra = '') {
+  const [a, b] = CLASS_FILL[c] || CLASS_FILL.C, id = 'cb' + c;
+  return `<svg class="clsbadge ${extra}" viewBox="24 7 52 82" aria-label="${c}"><defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs>
+    <path d="M27 10 H73 V50 Q73 73 50 86 Q27 73 27 50 Z" fill="url(#${id})" stroke="#fff" stroke-opacity=".55" stroke-width="2.5"/>
+    <text x="50" y="62" text-anchor="middle" font-family="Bahnschrift,'Segoe UI',sans-serif" font-weight="800" font-size="40"
+      fill="#fff" stroke="rgba(0,0,0,.45)" stroke-width="2" paint-order="stroke">${c}</text></svg>`;
+}
+
+/* el temporizador del juego para la etapa o la mejora ya terminó (según la duración de ese tipo de edificio) */
+const lotTimerDone = l => !!(l.ends && Date.now() / 1000 >= l.ends);
+const lotEnds = l => l.ends ? ' · ' + rawT('lot.ends', { when: fmtDate(l.ends) }) : '';
 function lotGrid(st) {
   if (!st.lots) return '';
   const cells = st.lots.map(l => {
@@ -1524,21 +1864,24 @@ function lotGrid(st) {
     let tip, cls = 'lot', inner;
     if (l.built) {
       tip = `${rawT('lot.n', { n: l.i + 1 })} · ${name} · ${rawT('lot.class', { c: l.cls })}`;
+      const done = l.ready || lotTimerDone(l);
       if (l.up) tip += l.ready ? ` · ${rawT('lot.ready', { to: l.up })}`
-        : ` · ${rawT('lot.in_progress', { to: l.up })}${l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : ''}`;
-      cls += ' on' + (l.up ? (l.ready ? ' ready' : ' up') : '') + (l.type ? '' : ' unk');
-      inner = `<span class="li">${LOT_ICON[l.type] || '🏢'}</span><b class="lc c${l.cls}">${l.cls}</b>${l.up ? (l.ready ? '<span class="rdy">✔</span>' : '<span class="cog">⚙</span>') : ''}`;
+        : done ? ` · ${rawT('lot.timer_done', { to: l.up })}`
+        : ` · ${rawT('lot.in_progress', { to: l.up })}${l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : ''}${lotEnds(l)}`;
+      cls += ' on' + (l.up ? (done ? ' ready' : ' up') : '') + (l.type ? '' : ' unk');
+      inner = `<span class="li">${LOT_ICON[l.type] || '🏢'}</span><span class="lc">${classBadge(l.cls)}</span>${l.up ? (done ? '<span class="rdy">✔</span>' : '<span class="cog">⚙</span>') : ''}`;
     } else if (l.building) {
-      tip = `${rawT('lot.n', { n: l.i + 1 })} · ${name} · ${rawT('lot.building')}${l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : ''}`;
-      cls += ' on up build' + (l.type ? '' : ' unk');
-      inner = `<span class="li">${LOT_ICON[l.type] || '🏗'}</span><span class="cog">⚙</span>`;
+      const done = l.stage_running && lotTimerDone(l);
+      tip = `${rawT('lot.n', { n: l.i + 1 })} · ${name} · ${rawT('lot.building')}${done ? ' · ' + rawT('lot.stage_done') : l.stage_running ? (l.since ? ' ' + rawT('lot.since', { when: fmtDate(l.since) }) : '') + lotEnds(l) : ' · ' + rawT('lot.next_stage')}`;
+      cls += ' on build' + (done ? ' ready' : ' up') + (l.type ? '' : ' unk');
+      inner = `<span class="li">${LOT_ICON[l.type] || '🏗'}</span><span class="lc" title="${esc(rawT('lot.class_after'))}">${classBadge('C', 'pending')}</span>${done ? '<span class="rdy">✔</span>' : l.stage_running ? '<span class="cog">⚙</span>' : '<span class="nxt">▶</span>'}`;
     } else {
       tip = `${rawT('lot.n', { n: l.i + 1 })} · ${rawT('lot.not_active')}${l.offered && l.type ? ' · ' + rawT('lot.offered', { name }) : ''}`;
       cls += ' off'; inner = '<span class="li">⬚</span>';
     }
     return `<div class="${cls}" title="${esc(tip)}">${inner}</div>`;
   }).join('');
-  const n = st.lots.filter(l => l.built).length, up = st.lots.filter(l => (l.up && !l.ready) || l.building).length, rdy = st.lots.filter(l => l.ready).length, known = st.lots.filter(l => l.built && l.type).length;
+  const n = st.lots.filter(l => l.built).length, rdy = st.lots.filter(l => l.ready || lotTimerDone(l)).length, up = st.lots.filter(l => (l.up && !l.ready) || l.building).length - st.lots.filter(l => !l.ready && lotTimerDone(l)).length, known = st.lots.filter(l => l.built && l.type).length;
   return `<div class="lotgrid">${cells}</div><p class="muted small">${t('lot.legend', { n, up, rdy, known })}</p>`;
 }
 function setCard(st) {
@@ -1818,7 +2161,7 @@ function aboutHtml() {
 }
 /* -- Ajustes -- */
 function viewSettings() {
-  const st = S.state.settings, L = { es: 'Español', en: 'English', ...{ 'es-ES': LANG_NAMES['es-ES'] } }, LT = LANG_NAMES;
+  const st = S.state.settings, L = { ...UI_LANGS, 'es-ES': LANG_NAMES['es-ES'] }, LT = LANG_NAMES;
   $('#main').innerHTML = `<h1>${t('settings.title')}</h1>
     <div class="card stack" style="max-width:640px">
       <div class="kv"><span>${t('settings.ui_lang')}</span><span>${L[st.ui_lang]}</span>
@@ -1895,8 +2238,10 @@ function securityHtml() {
        ${L.recovered ? `<p class="msg warn"><span>${t('lock.recovered_note')}</span></p><div class="row"><button class="btn" id="lk-setup">${t('lock.setup_again')}</button><button class="btn danger" id="lk-off">${t('lock.disable')}</button></div>`
                      : `<div class="row"><button class="btn danger" id="lk-off">${t('lock.disable')}</button></div>`}`
     : `<p class="muted small">${t('lock.off_help')}</p><div class="row"><button class="btn" id="lk-setup">🔐 ${t('lock.setup')}</button></div>`;
-  const alone = L.enabled ? '' : `<label class="chk"><input type="checkbox" id="lk-alone" ${S.state.settings.allow_unprotected ? 'checked' : ''}> ${t('lock.alone')}</label>
-    <p class="muted small">${t('lock.alone_help')}</p>`;
+  const on = !!S.state.settings.allow_unprotected;
+  const alone = L.enabled ? '' : `<div class="alonecard ${on ? 'on' : ''}"><div class="ah"><span class="ai">⚠</span><b>${t('lock.alone_card')}</b>${on ? `<span class="pill bad">${t('lock.alone_active')}</span>` : ''}</div>
+    <label class="chk"><input type="checkbox" id="lk-alone" ${on ? 'checked' : ''}> ${t('lock.alone')}</label>
+    <p class="small">${t('lock.alone_loses')}</p><p class="muted small">${t('lock.alone_help')}</p></div>`;
   return `<h3>${t('lock.section')}</h3>${lock}${alone}<p class="muted small">${t('lock.limits')}</p>
     <h3>${t('bk.extra_title')}</h3><p class="muted small">${t('bk.extra_help')}</p>
     <label>${t('bk.extra')}<input id="bk-extra" value="${esc(ex)}" placeholder="D:\\OlympianNMS_Backups"></label>
@@ -1970,4 +2315,63 @@ function lockSetup(redraw) {
     if (S.state.session) { await openEditor(S.state.session); } else { await showStart(); }
     if (!S.state.settings.lock_offered && !(S.state.lock && S.state.lock.enabled)) protectionOffer();
   } catch (e) { document.body.insertAdjacentHTML('beforeend', `<p class="msg block"><span>${esc(e.message)}</span></p>`); }
+})();
+
+/* -- tooltips with the game's look, for the whole app: every title="" becomes this panel (mouse and keyboard) -- */
+(() => {
+  const tip = document.createElement('div');
+  tip.id = 'gtip'; tip.setAttribute('role', 'tooltip'); tip.hidden = true;
+  document.body.appendChild(tip);
+  let cur = null;
+  const take = el => {
+    const t0 = el.getAttribute('title');
+    if (t0 != null) {
+      if (t0.trim()) {
+        el.dataset.tip = t0;
+        if (!el.getAttribute('aria-label') && !el.textContent.trim()) el.setAttribute('aria-label', t0.split('\n')[0]);
+      }
+      el.removeAttribute('title');
+    }
+    return el.dataset.tip;
+  };
+  const render = (text, el) => {
+    const parts = text.split('\n\n');
+    const lines = parts[0].split('\n');
+    const head = lines.shift();
+    const img = el.querySelector && el.querySelector('img');
+    let h = `<div class="gt-head">${img ? `<img src="${img.getAttribute('src')}" alt="">` : ''}<b>${esc(head)}</b></div>`;
+    if (lines.length) h += `<div class="gt-sub">${lines.map(esc).join('<br>')}</div>`;
+    for (const p of parts.slice(1)) {
+      const ls = p.split('\n');
+      const items = ls.filter(l => l.startsWith('• ')), rest = ls.filter(l => !l.startsWith('• '));
+      h += `<div class="gt-sec">${rest.map(l => `<p>${esc(l)}</p>`).join('')}${items.length ? `<ul>${items.map(l => {
+        const m = l.slice(2).match(/^(.*?):\s(.+)$/);
+        return m ? `<li><span>${esc(m[1])}</span><b>${esc(m[2])}</b></li>` : `<li><span>${esc(l.slice(2))}</span></li>`; }).join('')}</ul>` : ''}</div>`;
+    }
+    return h;
+  };
+  const place = el => {
+    const r = el.getBoundingClientRect(), w = tip.offsetWidth, hh = tip.offsetHeight, m = 8;
+    let x = r.left + r.width / 2 - w / 2, y = r.bottom + m;
+    if (y + hh > innerHeight - m) y = r.top - hh - m;
+    x = Math.max(m, Math.min(x, innerWidth - w - m)); y = Math.max(m, Math.min(y, innerHeight - hh - m));
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  };
+  const show = el => {
+    const text = take(el);
+    if (!text) return;
+    cur = el;
+    tip.className = el.dataset.tipcls ? 'cls' + el.dataset.tipcls : '';
+    tip.innerHTML = render(text, el);
+    tip.hidden = false;
+    place(el);
+  };
+  const hide = () => { tip.hidden = true; cur = null; };
+  const target = e => e.target.closest && e.target.closest('[title],[data-tip]');
+  document.addEventListener('mouseover', e => { const el = target(e); if (el && el !== cur) show(el); else if (!el && cur) hide(); });
+  document.addEventListener('focusin', e => { const el = target(e); if (el) show(el); });
+  document.addEventListener('focusout', hide);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && cur) hide(); });
+  document.addEventListener('scroll', hide, true);
+  document.addEventListener('mousedown', hide);
 })();

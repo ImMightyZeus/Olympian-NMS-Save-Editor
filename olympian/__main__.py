@@ -11,14 +11,19 @@ import time
 import webbrowser
 from pathlib import Path
 
-from .server import serve
+from .server import app_data_dir, serve
 
 IDLE_SHUTDOWN = 180  # safety net: seconds without any ping (minimized windows ping less often)
 BYE_GRACE = 6        # window closed (or reloaded): exit if no new ping arrives within this time
 
 
 def find_edge() -> str | None:
+    """Edge, or on macOS / Linux a Chromium browser that takes --app (a window without tabs); else None."""
     cands = [shutil.which('msedge')]
+    if sys.platform == 'darwin':
+        cands += [f'/Applications/{n}.app/Contents/MacOS/{n}' for n in ('Microsoft Edge', 'Google Chrome', 'Chromium', 'Brave Browser')]
+    elif sys.platform != 'win32':
+        cands += [shutil.which(n) for n in ('microsoft-edge', 'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'brave-browser')]
     for env in ('ProgramFiles(x86)', 'ProgramFiles', 'LOCALAPPDATA'):
         base = os.environ.get(env)
         if base:
@@ -56,7 +61,7 @@ def main(argv=None):
     if not args.no_window:
         edge = find_edge()
         if edge:
-            profile = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'OlympianNMS' / 'edge-profile'
+            profile = Path(os.environ.get('LOCALAPPDATA') or app_data_dir()) / 'OlympianNMS' / 'edge-profile'
             subprocess.Popen([edge, f'--app={url}', f'--user-data-dir={profile}', '--window-size=1280,860',
                               '--no-first-run', '--disable-features=Translate,msTranslate',
                               '--disable-background-timer-throttling', '--disable-renderer-backgrounding'])

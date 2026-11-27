@@ -15,7 +15,7 @@ from pathlib import Path
 
 DATA = Path(__file__).resolve().parent.parent / 'data' / 'gamedata.json'
 ICONS = Path(__file__).resolve().parent.parent / 'data' / 'icons.zip'
-LANGS = ('es', 'es-ES', 'en')
+LANGS = ('es', 'es-ES', 'en', 'ru')
 
 
 @lru_cache(maxsize=1)
@@ -136,8 +136,22 @@ def _clean_desc(text: str) -> str:
     return '\n\n'.join(paras)
 
 
+def stat_labels(lang: str = 'es') -> dict:
+    """The game's own label for each stat (Heat Dispersion, Life Support Tanks...) in that language."""
+    d = load()
+    if not d:
+        return {}
+    texts = d['texts'].get(lang if lang in LANGS else 'en', {})
+    meta = Path(__file__).resolve().parent.parent / 'data' / 'statsmeta.json'
+    try:
+        stats = json.loads(meta.read_text(encoding='utf-8'))['stats']
+    except (OSError, ValueError, KeyError):
+        return {}
+    return {s: texts[s] for s in stats if s in texts}
+
+
 def tips(lang: str = 'es') -> dict:
-    """Tooltip data for starship technology, as the game describes it: subtitle, class, description and,
+    """Tooltip data for every technology, as the game describes it: subtitle, class, description and,
     for procedural upgrades, each stat with the range the game rolls in (the exact roll depends on the seed)."""
     d = load()
     if not d:
@@ -146,9 +160,6 @@ def tips(lang: str = 'es') -> dict:
     out = {}
     for iid, it in d['items'].items():
         if it.get('k') not in ('tech', 'proc'):
-            continue
-        stats = [it.get('stat') or ''] + [r[0] or '' for r in it.get('ranges') or []]
-        if not any(x.startswith('Ship_') for x in stats):
             continue
         tip = {}
         if it.get('k') == 'tech' and texts.get(it.get('sub') or ''):
@@ -171,6 +182,19 @@ def chargeable(item_id: str) -> bool | None:
     if not it or it.get('k') not in ('tech', 'proc'):
         return None
     return bool(it.get('charge'))
+
+
+def tech_cat(item_id: str) -> str | None:
+    """The game's TechnologyCategory of a technology or upgrade module (an upgrade takes its template's):
+    Ship, AllShips, AllShipsExceptAlien, RobotShip, AlienShip, Corvette... None when unknown."""
+    it = item(base_id(item_id))
+    if not it:
+        return None
+    if it.get('k') == 'tech':
+        return it.get('cat')
+    if it.get('k') == 'proc':
+        return (item(it.get('template') or '') or {}).get('cat')
+    return None
 
 
 _ADJ = None
@@ -211,6 +235,9 @@ def find_game_dirs() -> list[Path]:
     out = []
     steam_roots = [Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Steam',
                    Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Steam']
+    home = Path.home()
+    steam_roots += [home / '.steam' / 'steam', home / '.local' / 'share' / 'Steam',
+                    home / '.var' / 'app' / 'com.valvesoftware.Steam' / '.local' / 'share' / 'Steam']
     libs = []
     for root in steam_roots:
         vdf = root / 'steamapps' / 'libraryfolders.vdf'
@@ -289,6 +316,7 @@ def _zip():
 
 
 UI_ICONS = {      # game's own UI icons used by the Summary view (read from icons.zip, never shipped loose)
+    **{f'glyph{c}': f'frontend~icons~update3~portalsymbol.{c}.webp' for c in '0123456789abcdef'},
     'units': 'frontend~icons~substances~currency.units.webp',
     'nanites': 'frontend~icons~substances~currency.nanites.webp',
     'quicksilver': 'frontend~icons~substances~currency.quicksilver.webp',

@@ -11,6 +11,13 @@ from functools import lru_cache
 from pathlib import Path
 
 OBF = {
+    'FloatValue': 'eoL',
+    'TeleportEndpoints': 'nlG',
+    'DiscoveryManagerData': 'fDu',
+    'DiscoveryData-v1': 'ETO',
+    'Record': '?fB',
+    'DD': '8P3',
+    'UA': '5L6',
     'BaseStatValues': '@bB',
     'BaseStatID': 'QL1',
     'Value': '>MX',
@@ -73,6 +80,7 @@ OBF = {
     'BaseType': 'peI',
     'PersistentBaseTypes': 'DPp',
     'UserData': 'CVX',
+    'Objects': '@ZJ',
     'BaseContext': 'vLc',
     'PlayerStateData': '6f=',
     'SpawnStateData': 'rnc',

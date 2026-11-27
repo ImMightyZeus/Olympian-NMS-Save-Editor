@@ -342,7 +342,9 @@ def plan_settlement(folder: SaveFolder, slot: int, action: str, params: dict | N
 # BuildingStates: one value per lot. Format deduced from the game's own saves (NMSE's reading,
 # consistent with every save of the user's history); shown only, never written:
 #   bits 0-6 all set = the building stands; 0 = lot not granted by the game yet;
-#   bits 20/21, 22/23, 24/25 = upgrade to B / A / S started / confirmed.
+#   bits 20/21, 22/23, 24/25 = upgrade to B / A / S started / confirmed; 27/28/29 = its timer ran out;
+#   bit 26 = built. Confirmed in game: A->S completed = 0x3FF0007F; empty lots 0x25 / 0x35; new buildings
+#   start at 0x27 / 0x37 (bit 1).
 LOTS_PATH: Path | None = None              # learned "lot = building type" pairs (settings folder)
 
 
@@ -386,6 +388,18 @@ def lot_state(v: int) -> dict:
     return {'built': True, 'cls': cls, 'up': up, 'ready': ready}
 
 
+def _ends(btype: str | None, start: int) -> int | None:
+    """When the game's timer for a stage or class upgrade runs out (unix seconds), if the lot's type is known:
+    start + SettlementBuildingTimes[type] (BuildingUpgradeTimeInSeconds when 0). Not counted: the "free upgrade"
+    game option (10 s) and the 0.2 speed-up of one early mission, so the real end can only come sooner."""
+    if not btype or not start or start <= 0:
+        return None
+    st = (gamedata.load() or {}).get('settlement') or {}
+    if 'build_time_default' not in st:
+        return None
+    return start + int((st.get('build_times') or {}).get(btype) or st['build_time_default'])
+
+
 def lots(s: dict, k, uid: str) -> list[dict]:
     states = s.get(k.s('BuildingStates')) or []
     stamps = s.get(k.s('LastBuildingUpgradesTimestamps')) or []
@@ -397,9 +411,13 @@ def lots(s: dict, k, uid: str) -> list[dict]:
         v = states[i] if i < len(states) else 0
         st = lot_state(v)
         ts = stamps[i] if i < len(stamps) and isinstance(stamps[i], int) else 0
-        building = not st['built'] and ts > 0          # a new building under construction (seen 15/nov: 0x27 + start time)
-        out.append({'i': i, **st, 'type': known.get(str(i)), 'since': ts if (st['up'] or building) and ts > 0 else None,
-                    'building': building,
+        # empty lots sit at 0x25 / 0x35; bit 1 marks a new building under construction (0x27 / 0x37 when it
+        # starts, more low bits per stage: 0x2F, 0x3F). The start time is set while a stage runs; without it the
+        # next stage waits for the player
+        building = not st['built'] and (ts > 0 or bool(v & 0x02))
+        out.append({'ends': _ends(known.get(str(i)), ts) if (st['up'] and not st['ready'] or building) else None,
+                    'i': i, **st, 'type': known.get(str(i)), 'since': ts if (st['up'] or building) and ts > 0 else None,
+                    'building': building, 'stage_running': building and ts > 0,
                     'offered': i == nxt and ncls != 'None', 'raw': v})
     return out
 

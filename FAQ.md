@@ -1,6 +1,6 @@
 # Olympian NMS Save Editor — FAQ
 
-[Leer en español](FAQ.es.md) · [Back to README](README.md)
+[Leer en español](FAQ.es.md) · [Читать на русском](FAQ.ru.md) · [Back to README](README.md)
 
 ### Is it safe to use on my main save?
 Olympian is built around not losing your progress: nothing is written until you press **Save**, a backup of the slot is made before every write, and every change is verified before and after writing. Still, editing saves is never risk-free — for big changes, try them first on a copy (*Start → Copy to another slot*).
@@ -66,7 +66,7 @@ A way to change a single text, number or yes/no value by hand. It keeps the valu
 They are items the current game data doesn't know (usually from a newer game version) or procedural items whose name the game generates at run time. They are still moved and kept correctly.
 
 ### Does it work with Xbox / Game Pass, PlayStation or Switch saves?
-No. Only the PC (Steam / GOG) save format is supported.
+Steam and GOG saves open directly. Game Pass for PC works through *Imported saves*: import the `wgs` folder, edit, and send it back with *Export for its owner → Xbox / Game Pass* (with the game closed; the folder is backed up first). Console saves (PlayStation, Xbox, Switch): no.
 
 ### Can I get banned for editing my save?
 Olympian only edits local save files. No Man's Sky has no known bans for save editing, but in multiplayer other players see what you bring, so use common sense.

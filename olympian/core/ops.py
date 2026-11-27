@@ -128,6 +128,36 @@ def _float(v: float) -> str:
     return repr(float(v))
 
 
+def visited_galaxies(f: SaveFile) -> list[int]:
+    """Galaxies the player has been to, as far as the save tells: where they discovered something (the galaxy
+    is bits 32-39 of each discovery's universe address), teleport endpoints, bases and where they are now.
+    The game keeps no list of its own."""
+    k = f.keys
+    psd = f.psd()
+    seen = {psd[k.s('UniverseAddress')][k.s('RealityIndex')]}
+    for e in psd.get(k.s('TeleportEndpoints')) or []:
+        ri = ((e or {}).get(k.s('UniverseAddress')) or {}).get(k.s('RealityIndex'))
+        if isinstance(ri, int):
+            seen.add(ri)
+    dm = f.json.get(k.s('DiscoveryManagerData')) or {}
+    store = ((dm.get(k.s('DiscoveryData-v1')) or {}).get(k.s('Store')) or {}).get(k.s('Record')) or []
+    for r in store:
+        ua = ((r or {}).get(k.s('DD')) or {}).get(k.s('UA'))
+        try:
+            v = int(ua, 16) if isinstance(ua, str) else int(ua)
+        except (TypeError, ValueError):
+            continue
+        seen.add((v >> 32) & 0xFF)
+    for b in psd.get(k.s('PersistentPlayerBases')) or []:
+        ga = (b or {}).get(k.s('GalacticAddress'))
+        try:
+            v = int(ga, 16) if isinstance(ga, str) else int(ga)
+        except (TypeError, ValueError):
+            continue
+        seen.add((v >> 32) & 0xFF)
+    return sorted(x for x in seen if isinstance(x, int) and 0 <= x <= 255)
+
+
 def describe_slot(folder: SaveFolder, slot: int, files_in: list[SaveFile] | None = None,
                   names: dict | None = None) -> dict:
     files = []
@@ -146,6 +176,7 @@ def describe_slot(folder: SaveFolder, slot: int, files_in: list[SaveFile] | None
             'summary': f.meta.summary,
             'timestamp': f.meta.timestamp, 'mtime': f.mtime_hg, 'playtime': f.meta.playtime,
             'galaxy': ua[k.s('RealityIndex')], 'galaxy_name': galaxy_name(ua[k.s('RealityIndex')]),
+            'visited_galaxies': visited_galaxies(f),
             'address': {'x': ga[k.s('VoxelX')], 'y': ga[k.s('VoxelY')], 'z': ga[k.s('VoxelZ')],
                         'system': ga[k.s('SolarSystemIndex')], 'planet': ga[k.s('PlanetIndex')]},
             'state': spawn.get(k.s('LastKnownPlayerState')),
@@ -164,7 +195,17 @@ def describe_slot(folder: SaveFolder, slot: int, files_in: list[SaveFile] | None
     return {'slot': slot, 'files': files}
 
 
+def _offline(folder) -> bool:
+    """A save in Olympian's imported space: the game never reads or writes it."""
+    try:
+        return (Path(folder) / 'import.json').is_file()
+    except (TypeError, OSError):
+        return False
+
+
 def _game_check(plan: Plan):
+    if _offline(plan.folder):
+        return
     running = safety.game_running()
     if running:
         plan.messages.append(msg('block', 'game_running'))
@@ -576,7 +617,7 @@ def point_details(folder: Path, info: dict) -> dict:
 def apply(plan: Plan) -> dict:
     if plan.blocked:
         raise PermissionError('blocked')
-    if safety.game_running():
+    if not _offline(plan.folder) and safety.game_running():       # imported saves are not the game's
         raise PermissionError('game_running')
     folder = plan.folder
     report = {'action': plan.action, 'written': [], 'backup': None, 'verified': []}

@@ -1,6 +1,6 @@
 # Olympian NMS Save Editor — Preguntas frecuentes
 
-[Read in English](FAQ.md) · [Volver al README](README.es.md)
+[Read in English](FAQ.md) · [Читать на русском](FAQ.ru.md) · [Volver al README](README.es.md)
 
 ### ¿Es seguro usarlo en mi partida principal?
 Olympian está hecho para no perder tu progreso: nada se escribe hasta que pulsas **Guardar**, antes de cada escritura se respalda el slot y cada cambio se verifica antes y después de escribir. Aun así, editar partidas nunca está libre de riesgo: para cambios grandes, pruébalos primero en una copia (*Inicio → Copiar a otro slot*).
@@ -66,7 +66,7 @@ Una forma de cambiar a mano un solo texto, número o sí/no. Mantiene el tipo de
 Son objetos que los datos actuales no conocen (normalmente de una versión más nueva del juego) u objetos procedurales cuyo nombre genera el juego al jugar. Igual se mueven y se conservan bien.
 
 ### ¿Funciona con partidas de Xbox / Game Pass, PlayStation o Switch?
-No. Solo con el formato de PC (Steam / GOG).
+Steam y GOG se abren directamente. Game Pass para PC, a través de *Partidas importadas*: importas la carpeta `wgs`, editas y la devuelves con *Exportar para su dueño → Xbox / Game Pass* (con el juego cerrado; antes se respalda la carpeta). Partidas de consola (PlayStation, Xbox, Switch): no.
 
 ### ¿Me pueden banear por editar mi partida?
 Olympian solo edita archivos locales. No se conocen baneos en No Man's Sky por editar partidas, pero en multijugador los demás ven lo que llevas, así que usa el sentido común.

@@ -35,7 +35,27 @@ TABLES = {
     'procproducts': 'metadata/reality/tables/proceduralproducttable.mbin',      # PROC_LOOT#seed... (generic name)
     'settleperks': 'metadata/reality/tables/settlementperkstable.mbin',          # phase 5: settlement perks
     'settleglobals': 'gcsettlementglobals.mbin',                                 # phase 5: settlement rules
+    'reality': 'metadata/reality/defaultreality.mbin',                           # tech stats: rarity curves
+    'gameplay': 'gcgameplayglobals.global.mbin',                                 # tech stats: adjacency, supercharge
+    'inventory': 'metadata/reality/tables/inventorytable.mbin',                  # tech stats: class bonuses
+    'player': 'gcplayerglobals.global.mbin',                                     # tech stats: X/Sentinel high grade
+    'spaceship': 'gcspaceshipglobals.global.mbin',                               # ship screen: manoeuvrability, damage
+    'projectiles': 'metadata/projectiles/projectiletable.mbin',                  # ship screen: weapon range, laser
+    'journey': 'metadata/reality/journey.mbin',                                  # summary: medals and milestones
+    'leveled': 'metadata/gamestate/stats/leveledstatstable.mbin',                # summary: levels of each stat
 }
+PROC_QUALITY = ['Normal', 'Rare', 'Epic', 'Legendary', 'Illegal', 'Sentinel', 'Robot', 'SeaTrash']
+WEIGHTING = ['NoWeighting', 'MaxIsUncommon', 'MaxIsRare', 'MaxIsSuperRare', 'MinIsUncommon', 'MinIsRare',
+             'MinIsSuperRare']
+CURVE_IDS = {'Linear': 0, 'SmoothInOut': 1, 'FastInSlowOut': 2, 'BellSquared': 3, 'Squared': 4, 'Cubed': 5,
+             'Logarithmic': 6, 'SlowIn': 7, 'SlowOut': 8, 'ReallySlowOut': 9, 'SmootherStep': 10,
+             'SmoothFastInSlowOut': 11, 'SmoothSlowInFastOut': 12, 'EaseInSine': 13, 'EaseOutSine': 14,
+             'EaseInOutSine': 15, 'EaseInQuad': 16, 'EaseOutQuad': 17, 'EaseInOutQuad': 18, 'EaseInQuart': 19,
+             'EaseOutQuart': 20, 'EaseInOutQuart': 21, 'EaseInQuint': 22, 'EaseOutQuint': 23, 'EaseInOutQuint': 24,
+             'EaseInExpo': 25, 'EaseOutExpo': 26, 'EaseInOutExpo': 27}
+ADJ_KEYS = {'same_add': 'BonusSameTypeElementsAdd', 'same_mul': 'BonusSameTypeElementsMultiply',
+            'child_add': 'BonusChildTypeElementsAdd', 'child_mul': 'BonusChildTypeElementsMultiply',
+            'supercharge': 'SpecialTechSlotBonus', 'max_group': 'MaxNumSameGroupTech'}
 # phase 5: texts shown in the settlements view and the advisor, besides the tables' own keys
 SETTLE_TEXTS = ['UI_SETTLEMENT_PROD_DEBT', 'UI_SETTLEMENT_PROD_DEBT_TIP', 'UI_SETTLEMENT_PROD_DEBT_TIP2',
                 'UI_SETTLEMENT_DEBT_INC', 'UI_SETTLEMENT_DEBT_DEC']
@@ -47,7 +67,8 @@ JUDGEMENT_TYPES = ['None', 'StrangerVisit', 'Policy', 'NewBuilding', 'BuildingCh
 # content language -> (localisation file suffix, column in the table)
 LANGS = {'es': ('latinamericanspanish', 'LatinAmericanSpanish'),
          'es-ES': ('spanish', 'Spanish'),
-         'en': ('english', 'English')}
+         'en': ('english', 'English'),
+         'ru': ('russian', 'Russian')}
 TAG = re.compile(r'<[^>]*>')
 QUALITY = {'Normal': 'C', 'Rare': 'B', 'Epic': 'A', 'Legendary': 'S', 'Illegal': 'X', 'Sentinel': 'Ø'}
 
@@ -123,6 +144,14 @@ def nested(el, name, inner):
     return None if c is None else val(c, inner)
 
 
+def charge_by(el) -> list | None:
+    """Items that recharge a chargeable technology (ChargeBy), e.g. sodium for the starship shield."""
+    if val(el, 'Chargeable') != 'true':
+        return None
+    c = props(el).get('ChargeBy')
+    return [x.get('value') for x in c if x.get('value')] if c is not None else []
+
+
 def trade(el) -> dict:
     """Rarity (Common/Uncommon/Rare) and base value in units, for sorting inventories."""
     return {'rarity': nested(el, 'Rarity', 'Rarity') or '', 'value': float(val(el, 'BaseValue', 0) or 0)}
@@ -179,6 +208,10 @@ def settlement(perks_xml: Path, globals_xml: Path) -> dict:
             'max_perks': int(g['MaxPerksCount'].get('value')),
             'max_population': int(g['MaxNPCPopulation'].get('value')),
             'debt_per_day': int(g['DailyDebtPaymentModifier'].get('value')),
+            # seconds per construction stage / class upgrade; 0 = BuildingUpgradeTimeInSeconds (game code 0x140445e80)
+            'build_times': {c.get('name'): int(c.get('value')) for c in g['SettlementBuildingTimes']
+                            if int(c.get('value') or 0) > 0},
+            'build_time_default': int(g['BuildingUpgradeTimeInSeconds'].get('value')),
             'texts': SETTLE_TEXTS, 'vehicles': VEHICLE_TEXTS}
 
 
@@ -191,7 +224,7 @@ def num(v):
 
 def table_entries(xml_path: Path):
     root = ET.parse(xml_path).getroot()
-    table = next(c for c in root if c.get('name') in ('Table', 'Objects'))
+    table = next(c for c in root if c.get('name') in ('Table', 'Objects', 'Categories', 'LeveledStatTable'))
     return list(table)
 
 
@@ -207,6 +240,117 @@ def stat_bonuses(el):
     for b in (sb if sb is not None else []):
         out.append([nested(b, 'Stat', 'StatsType'), float(val(b, 'Bonus', 0) or 0)])
     return out
+
+
+def proc_levels(e) -> dict:
+    """What the game needs to roll a procedural upgrade from its seed: quality, how many stats, the rarity
+    curves and each stat's range (full precision: the roll is recomputed in float32)."""
+    lv = props(e).get('StatLevels')
+    q = val(e, 'Quality')
+    return {'q': PROC_QUALITY.index(q) if q in PROC_QUALITY else 0,
+            'n': [int(val(e, 'NumStatsMin', 0) or 0), int(val(e, 'NumStatsMax', 0) or 0)],
+            'wc': WEIGHTING.index(nested(e, 'WeightingCurve', 'WeightingCurve') or 'NoWeighting'),
+            'biggs': val(e, 'IsBiggsProcTech') == 'true',
+            'lv': [[nested(x, 'Stat', 'StatsType'), float(val(x, 'ValueMin', 0) or 0), float(val(x, 'ValueMax', 0) or 0),
+                    WEIGHTING.index(nested(x, 'WeightingCurve', 'WeightingCurve') or 'NoWeighting'),
+                    val(x, 'AlwaysChoose') == 'true'] for x in (lv if lv is not None else [])]}
+
+
+CONTROL_BY_CLASS = {          # GcSpaceshipClasses -> control set the ship screen uses (game code, build 185034)
+    'Dropship': 'ControlHeavy', 'Alien': 'ControlHeavy', 'Corvette': 'ControlCorvette',
+    'Fighter': 'ControlLight', 'Scientific': 'ControlLight', 'Royal': 'ControlLight', 'Sail': 'ControlLight',
+    'Robot': 'ControlHover', 'SwarmDrone': 'ControlHover'}
+
+
+def journey(journey_xml: Path, leveled_xml: Path) -> dict:
+    """The game's journey page: categories, the stat behind each medal and that stat's levels.
+    {'categories': [{'name': key, 'medals': [{'stat': id, 'title': key, 'float': bool,
+                                              'levels': [[threshold, level name key], ...]}]}]}"""
+    levels = {}
+    for e in table_entries(leveled_xml):
+        sid = val(e, 'StatId')
+        lv = props(e).get('StatLevels')
+        if not sid or lv is None:
+            continue
+        rows = []
+        for x in lv:
+            v = props(x).get('Value')
+            iv, fv = num(val(v, 'IntValue')) if v is not None else 0, num(val(v, 'FloatValue')) if v is not None else 0
+            rows.append([fv if fv else iv, val(x, 'LevelName') or ''])
+        levels[sid] = rows
+    cats = []
+    for c in table_entries(journey_xml):
+        medals = []
+        for m in (props(c).get('Medals') if props(c).get('Medals') is not None else []):
+            sid = val(m, 'LevelledStatID')
+            if not sid or val(m, 'OverallJourneyDummy') == 'true' or sid not in levels:
+                continue
+            medals.append({'stat': sid, 'title': val(m, 'MedalTitle') or '',
+                           'float': nested(m, 'StatType', 'StatType') == 'Float', 'levels': levels[sid]})
+        if medals:
+            cats.append({'name': val(c, 'NameIDLower') or val(c, 'NameIDUpper') or '', 'medals': medals})
+    return {'categories': cats}
+
+
+def journey_keys(j: dict) -> set:
+    return {k for c in j['categories'] for k in [c['name']] + [m['title'] for m in c['medals']] +
+            [n for m in c['medals'] for _v, n in m['levels']] if k}
+
+
+def ship_screen(reality: Path, spaceship: Path, projectiles: Path, player: Path) -> dict:
+    """Data behind the ship screen's Manoeuvrability and Damage Potential."""
+    sg = ET.parse(spaceship).getroot()
+    top = {c.get('name'): c for c in sg}
+    num = lambda e, k: float(val(e, k))
+
+    def planet(name):
+        pe = next(c for c in top[name] if c.get('name') == 'PlanetEngine')
+        return [num(pe, 'TurnStrength'), num(pe, 'BoostingTurnDamp')]
+    controls = {n: planet(n) for n in ('Control', 'ControlLight', 'ControlHeavy', 'ControlCorvette', 'ControlHover')}
+    bonus = {c: [num(top['ControlBonus' + c], k) for k in ('TurnStrengthMax', 'TurnStrengthMin',
+                                                           'BoostingTurnDampMax', 'BoostingTurnDampMin')]
+             for c in 'CBAS'}
+    weapons = []
+    sw = next(c for c in ET.parse(reality).getroot() if c.get('name') == 'ShipWeapons')
+    pt = {}
+    for e in ET.parse(projectiles).getroot().iter('Property'):
+        if e.get('value') == 'GcProjectileData' and val(e, 'Id'):
+            pt[val(e, 'Id')] = [num(e, 'DefaultSpeed'), num(e, 'Life')]
+        if e.get('value') == 'GcLaserBeamData' and val(e, 'Id') == 'PLAYER_SHIP':
+            laser = [num(e, 'DefaultDamage'), num(e, 'HitRate')]
+    for w in sw:
+        proj = val(w, 'Projectile') or ''
+        weapons.append({'name': w.get('name'), 'stat': nested(w, 'Stat', 'StatsType'),
+                        'projectile': val(w, 'IsProjectile') == 'true', 'cool': num(w, 'OverheatCoolTime'),
+                        'speed_life': pt.get(proj)})
+    pl = {c.get('name'): c.get('value') for c in ET.parse(player).getroot()}
+    g = {c.get('name'): c.get('value') for c in sg}
+    return {'controls': controls, 'control_by_class': CONTROL_BY_CLASS, 'class_bonus': bonus, 'weapons': weapons,
+            'laser': laser, 'laser_downtime': float(g['LaserOverheatDownTime']),
+            'ref_range': float(g['WeaponDamagePotentialReferenceRange']),
+            'default_range': float(pl['AimDistanceShip'])}
+
+
+def techstats(reality: Path, gameplay: Path, inventory: Path, player: Path) -> dict:
+    """Rules for the real value of each stat: rarity curves (procedural rolls), adjacency and supercharge
+    bonuses, and the per-ship/tool class bonuses (BaseStatValues) with the stats each one changes."""
+    root = ET.parse(reality).getroot()
+    wcs = next(c for c in root.iter('Property') if c.get('name') == 'WeightingCurves')
+    curves = [CURVE_IDS[val(c, 'Curve')] for c in wcs]
+    groot = ET.parse(gameplay).getroot()
+    g = {c.get('name'): c.get('value') for c in groot}
+    adj = {k: float(g[v]) for k, v in ADJ_KEYS.items()}
+    adj['max_group'] = int(adj['max_group'])
+    adj['multiplier_bonus'] = g.get('UseMultiplierBonus') == 'true'
+    base = {}
+    for e in ET.parse(inventory).getroot().iter('Property'):
+        if e.get('value') == 'GcInventoryBaseStat' and val(e, 'BaseStatID'):
+            sb = props(e).get('StatBonus')
+            base[val(e, 'BaseStatID')] = [[nested(b, 'StatType', 'StatsType'), val(b, 'LessIsBetter') == 'true']
+                                          for b in (sb if sb is not None else [])]
+    pl = {c.get('name'): c.get('value') for c in ET.parse(player).getroot()}
+    # Illegal/Sentinel/Robot upgrades: chance (%) of the "high grade" roll (near-best values)
+    return {'curves': curves, 'adj': adj, 'base_stats': base, 'high_grade': int(pl.get('ChanceHighGradeIllegal') or 0)}
 
 
 def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None):
@@ -242,6 +386,7 @@ def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None
             items[iid] = {'k': 'tech', 'name': val(e, 'NameLower') or val(e, 'Name'),
                           'cat': nested(e, 'Category', 'TechnologyCategory'),
                           'charge': val(e, 'Chargeable') == 'true', 'charge_amount': int(val(e, 'ChargeAmount', 0) or 0),
+                          'charge_by': charge_by(e),
                           'upgrade': val(e, 'Upgrade') == 'true', 'core': val(e, 'Core') == 'true',
                           'stat': nested(e, 'BaseStat', 'StatsType'), 'bonus': stat_bonuses(e), 'icon': icon(e),
                           'sub': val(e, 'Subtitle') or None, 'desc': val(e, 'Description') or None}
@@ -257,7 +402,8 @@ def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None
                           'desc': val(e, 'Description') or None,
                           # tooltip: each stat with the range the game rolls in (the exact roll comes from the seed)
                           'ranges': [[nested(x, 'Stat', 'StatsType'), num(val(x, 'ValueMin')), num(val(x, 'ValueMax'))]
-                                     for x in (props(e).get('StatLevels') if props(e).get('StatLevels') is not None else [])]}
+                                     for x in (props(e).get('StatLevels') if props(e).get('StatLevels') is not None else [])],
+                          **proc_levels(e)}
         for e in [e for t in ('product', 'baseparts', 'modular') for e in table_entries(mx[TABLES[t]])]:
             iid = val(e, 'ID')
             if iid:
@@ -282,12 +428,17 @@ def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None
         st_keys = {p[f] for p in st['perks'].values() for f in ('n', 'd') if p.get(f)}
         st_keys |= {k for f in ('title', 'sub', 'text', 'objective') for k in st['judgement'][f] if k}
         st_keys |= {k for k in st['buildings'].values() if k} | {k for k in SETTLE_TEXTS + VEHICLE_TEXTS if k}
+        jr = journey(mx[TABLES['journey']], mx[TABLES['leveled']])
+        st_keys |= journey_keys(jr)                      # kept like the settlement texts
         needed = {it[f] for it in items.values() for f in ('name', 'sub', 'desc') if it.get(f)}
         needed |= st_keys
         needed |= {m[f] for m in mis.values() for f in ('t', 's') if m.get(f)}
         needed |= {k for m in mis.values() for c in m['_c'] for k in c}
+        stats = {r[0] for it in items.values() for f in ('bonus', 'ranges', 'lv') for r in it.get(f) or []}
+        needed |= {s for s in stats if isinstance(s, str)}       # the game's own stat labels (key = stat name)
         texts: dict[str, dict[str, str]] = {lang: {} for lang in LANGS}
         needed_uc = {n.upper(): n for n in needed}
+        needed_uc.update({s.upper()[:31]: s for s in stats if len(s) > 31})   # the game cuts label ids at 31
         for name, path in mx.items():
             if not name.startswith('language/'):
                 continue
@@ -321,9 +472,25 @@ def build(pcbanks: Path, mbinc: str, out_json: Path, timings: dict | None = None
            'compiler': subprocess.run([mbinc, 'version'], capture_output=True, text=True).stdout.strip()[-40:],
            'source': 'No Man\'s Sky game files, read with HGPAKtool (MIT) and MBINCompiler (LGPL-3.0)',
            'stack_sizes': stacks,
-           'items': items, 'missions': mis, 'settlement': st, 'texts': texts}
+           'items': items, 'missions': mis, 'settlement': st, 'texts': texts, 'journey': jr,
+           'techstats': {**techstats(mx[TABLES['reality']], mx[TABLES['gameplay']], mx[TABLES['inventory']],
+                                     mx[TABLES['player']]),
+                         'ship': ship_screen(mx[TABLES['reality']], mx[TABLES['spaceship']], mx[TABLES['projectiles']],
+                                             mx[TABLES['player']])}}
     out_json.write_text(json.dumps(out, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
     lap('parse')
+    exe = pcbanks.parent / 'Binaries' / 'NMS.exe'             # stat parents and kinds live in the executable
+    if exe.exists():
+        meta = out_json.parent / 'statsmeta.json'
+        try:
+            import build_statsmeta                             # needs pefile (pip install pefile)
+            sm = build_statsmeta.build(exe)
+            old = json.loads(meta.read_text(encoding='utf-8')) if meta.exists() else {}
+            meta.write_text(json.dumps({'game_build': old.get('game_build', ''), 'note': old.get('note', ''), **sm},
+                                       ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+        except (ImportError, LookupError) as e:               # keep the bundled table; say so
+            print('statsmeta:', e, '- kept the bundled table')
+        lap('statsmeta')
     return out
 
 
